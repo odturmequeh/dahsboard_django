@@ -7,7 +7,7 @@ export default function PageResources({ startDate, endDate }) {
   const [error, setError] = useState(null);
   const [visibleRows, setVisibleRows] = useState(5);
 
-  const API_BASE_URL = "http://127.0.0.1:8000/api/dashboard";
+  const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard";
 
   const handleSearch = async () => {
     const trimmedUrl = searchUrl.trim();
