@@ -6,7 +6,11 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import DateRange, Metric, Dimension, RunReportRequest
 from urllib.parse import urlparse
 from django.views.decorators.csrf import csrf_exempt
-
+from google.generativeai import GenerativeModel, configure
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI
+import json
+import google.generativeai as genai
 
 
 def ga4_dashboard_metrics(request):
@@ -877,6 +881,89 @@ def ga4_click_flow(request):
         return JsonResponse({"error": str(e)}, status=500)
     
 
+@csrf_exempt
+def ai_resources_analysis(request):
+    try:
+        print("📥 RAW BODY:", request.body)
+
+        data = json.loads(request.body.decode("utf-8"))
+        print("📥 DATA PARSED:", data)
+
+        resources = data.get("resources", [])
+        url = data.get("url", "")
+
+        print("📦 RESOURCES COUNT:", len(resources))
+        print("🔗 URL:", url)
+
+        api_key = os.getenv("GEMINI_API_KEY")
+        print("🔑 API KEY:", api_key[:5] + "...")
+
+        genai.configure(api_key=api_key)
+
+        # 👇 MODELO CORRECTO
+        MODEL_NAME = "models/gemini-2.5-flash"
+
+        model = genai.GenerativeModel(MODEL_NAME)
+
+        prompt = f"""
+
+Actúa como un especialista senior en SEO técnico y rendimiento web. Recibirás esta URL: {url} desde mi dashboard en Django junto con estos recursos: {json.dumps(resources, indent=2)}.
+
+Debes generar exactamente 6 recomendaciones de Core Web Vitals:
+- 2 para LCP
+- 2 para INP
+- 2 para CLS
+
+Cada recomendación debe incluir:
+- Problema
+- Solución
+- Responsable sugerido (Frontend, Soporte, Infraestructura, Diseño o CMS/Contenido)
+
+El análisis debe ser técnico, accionable, profesional y contextualizado. 
+No generes introducciones, saludos ni explicaciones. 
+Devuelve únicamente el siguiente formato EXACTO, sin JSON, sin tablas, sin corchetes:
+
+LCP:
+- PROBLEMA: ...
+  SOLUCION: ...
+  RESPONSABLE: ...
+
+- PROBLEMA: ...
+  SOLUCION: ...
+  RESPONSABLE: ...
+
+INP:
+- PROBLEMA: ...
+  SOLUCION: ...
+  RESPONSABLE: ...
+
+- PROBLEMA: ...
+  SOLUCION: ...
+  RESPONSABLE: ...
+
+CLS:
+- PROBLEMA: ...
+  SOLUCION: ...
+  RESPONSABLE: ...
+
+- PROBLEMA: ...
+  SOLUCION: ...
+  RESPONSABLE: ...
+"""
 
 
-    
+
+
+        print("📝 Enviando prompt a Gemini...")
+
+        response = model.generate_content(prompt)
+
+        print("📤 RESPUESTA GEMINI:", response)
+
+        return JsonResponse({"analysis": response.text})
+
+    except Exception as e:
+        print("❌ ERROR:", e)
+        return JsonResponse({"error": str(e)}, status=500)
+
+

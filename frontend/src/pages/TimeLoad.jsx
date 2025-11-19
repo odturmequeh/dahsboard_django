@@ -5,6 +5,7 @@ import LineChartMetrics from "../components/LineChartMetrics.jsx";
 import DeviceLoadTimeChart from "../components/DeviceLoadTimeChart.jsx"; // Componente para la latencia horaria
 import FunnelTable from "../components/FunnelTable.jsx";
 import PageResources from "../components/PageResources.jsx";
+import AIInsight from "../components/AIInsight.jsx";
 import { useNavigate } from "react-router-dom";
 
 export default function TimeLoad() {
@@ -24,7 +25,7 @@ export default function TimeLoad() {
   const [startDate, setStartDate] = useState(formatDate(past28));
   const [endDate, setEndDate] = useState(formatDate(today));
   
-  const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard"; // URL Base del backend
+  const API_BASE_URL = "http://127.0.0.1:8000/api/dashboard"; // URL Base del backend
 
   // --- Funciones de Fetch (usando useCallback para optimización) ---
 
