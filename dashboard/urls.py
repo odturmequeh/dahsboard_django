@@ -10,8 +10,6 @@ urlpatterns = [
     path('dashboard/click_relation/', views.ga4_click_relation, name='click_relation_data'),
     path('dashboard/click_detail/<str:elemento>/', views.ga4_click_detail, name='click_detail_data'),
     path("dashboard/user_click_flow/", views.ga4_click_flow, name="user_click_flow"),  
-    path("dashboard/ai-resources-analysis/", views.ai_resources_analysis, name="ai_resources_analysis"),
-
-    
+   
 
 ]

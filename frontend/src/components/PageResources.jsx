@@ -6,9 +6,9 @@ export default function PageResources({ startDate, endDate }) {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
   const [visibleRows, setVisibleRows] = useState(5);
-  const [analysis, setAnalysis] = useState("");
 
-  const API_BASE_URL = "http://127.0.0.1:8000/api/dashboard";
+  // Cambié la URL de localhost por la de Render
+  const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard";
 
   const handleSearch = async () => {
     const trimmedUrl = searchUrl.trim();
@@ -21,9 +21,8 @@ export default function PageResources({ startDate, endDate }) {
     setError(null);
     setResults(null);
     setVisibleRows(5);
-    setAnalysis("");
 
-    // Simular pequeño delay para liberar el hilo (como en el código original)
+    // Simular pequeño delay para liberar el hilo
     await new Promise(resolve => setTimeout(resolve, 30));
 
     try {
@@ -49,26 +48,7 @@ export default function PageResources({ startDate, endDate }) {
 
       setResults(data);
       console.log("📊 Agrupaciones calculadas:", data);
-       const aiResponse = await fetch(
-      `${API_BASE_URL}/ai-resources-analysis/`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          resources: data.resources,
-          url: trimmedUrl
-        })
-      }
-    );
 
-    const aiData = await aiResponse.json();
-
-    if (aiData.error) {
-      console.error("❌ Error IA:", aiData.error);
-      setAnalysis("❌ Error consultando IA.");
-    } else {
-      setAnalysis(aiData.analysis);
-    }
     } catch (err) {
       console.error("❌ Error al buscar recursos:", err);
       setError("Error al conectar con el servidor. Verifica que Django esté corriendo.");
@@ -190,13 +170,6 @@ export default function PageResources({ startDate, endDate }) {
               </button>
             </div>
           )}
-
-                {analysis && (
-        <div className="mt-6 bg-gray-100 border p-4 rounded-lg">
-          <h3 className="font-bold text-lg mb-2">🤖 Análisis IA</h3>
-          <p className="whitespace-pre-line">{analysis}</p>
-        </div>
-      )}
         </div>
       )}
     </div>
