@@ -397,6 +397,7 @@ const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10)); /
                   <th className="p-2 text-left">Timestamp</th>
                   <th className="p-2 text-left">Evento</th>
                   <th className="p-2 text-left">Elemento clickeado</th>
+                  <th className="p-2 text-right">% Scroll</th> {/* nueva columna */}
                 </tr>
               </thead>
               <tbody>
@@ -413,13 +414,28 @@ const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10)); /
                     const minute = ts.slice(10, 12);
                     formattedTimestamp = `${day}/${month}/${year} ${hour}:${minute}`;
                   } else formattedTimestamp = click.timestamp || "-";
-
+                  const scrollValue =
+                    click.scrolls && click.scrolls.length > 0
+                      ? click.scrolls
+                          .map(s => parseInt(s))
+                          .sort((a, b) => a - b)
+                          .map(s => s + "%")
+                          .join(" | ")
+                      : "-"; 
                   return (
                     <tr key={i} className="border-t">
                       <td className="p-2">{i + 1}</td>
                       <td className="p-2">{formattedTimestamp}</td>
                       <td className="p-2">{click.type}</td>
-                      <td className="p-2">{click.detail}</td>
+                      <td className="p-2 relative group">
+                        <div className="truncate max-w-md">
+                          {click.detail}
+                        </div>
+                        <div className="hidden group-hover:block absolute left-0 top-full mt-1 bg-gray-900 text-white text-xs p-2 rounded shadow-lg z-50 max-w-lg break-all">
+                          {click.detail}
+                        </div>
+                      </td>
+                      <td className="p-2 text-right">{scrollValue}</td>
                     </tr>
                   );
                 })}

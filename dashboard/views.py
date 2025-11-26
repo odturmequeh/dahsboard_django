@@ -804,8 +804,11 @@ def ga4_click_detail(request, elemento):
 @csrf_exempt
 def ga4_click_flow(request):
     """
-    Retorna flujo de un usuario por session_id, incluyendo clicks y URLs visitadas
-    con timestamp válido.
+    Retorna flujo de un usuario por session_id, incluyendo:
+    - pageviews
+    - clicks
+    - scroll events (scroll-20, scroll-40, scroll-60, etc)
+    y los une por URL dentro del mismo flujo.
     """
     try:
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -818,18 +821,20 @@ def ga4_click_flow(request):
             return JsonResponse({"error": "Se requiere session_id"}, status=400)
 
         client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
         start_date = "2025-10-15"
         end_date = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # --- Traer session_id, user_click, page_location y eventTimestamp ---
+        # --- 🔥 AHORA PEDIMOS eventName para capturar los scroll ---
         response = client.run_report(
             RunReportRequest(
                 property=f"properties/{property_id}",
                 dimensions=[
                     Dimension(name="customEvent:session_id_final"),
-                    Dimension(name="customEvent:user_click"),
+                    Dimension(name="eventName"),              # 👈 scroll-20, scroll-40, etc
+                    Dimension(name="customEvent:user_click"), # sigue igual
                     Dimension(name="pageLocation"),
-                    Dimension(name="dateHourMinute"),  # timestamp real de GA4
+                    Dimension(name="dateHourMinute"),
                 ],
                 metrics=[],
                 date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
@@ -839,47 +844,76 @@ def ga4_click_flow(request):
                         "string_filter": {"value": session_id, "match_type": "EXACT"}
                     }
                 },
-                limit=1000,
+                limit=2000,
             )
         )
 
-        data = []
-        for row in response.rows:
-            dhm_value = row.dimension_values[3].value
-            user_click = row.dimension_values[1].value
-            page_url = row.dimension_values[2].value
+        scroll_prefix = "scroll-"
+        rows = []
+        url_scrolls = {}  # Agrupar scrolls por URL
 
-            # Agregar click si existe
-            if user_click not in [None, "", "(not set)"]:
-                data.append({
-                    "session_id": row.dimension_values[0].value,
+        print("RAW ROWS:")
+        for row in response.rows:
+            sess = row.dimension_values[0].value
+            event_name = row.dimension_values[1].value
+            user_click = row.dimension_values[2].value
+            page_url = row.dimension_values[3].value
+            timestamp = row.dimension_values[4].value
+
+            print("EVENT:", event_name, "CLICK:", user_click, "URL:", page_url)
+
+            # --- 🔥 Scroll event real (NO VIENE EN user_click) ---
+            if event_name.startswith(scroll_prefix):
+                perc = event_name.replace("scroll-", "")
+                url_scrolls.setdefault(page_url, []).append(f"{perc}%")
+
+            rows.append({
+                "session_id": sess,
+                "event_name": event_name,
+                "user_click": user_click,
+                "page_url": page_url,
+                "timestamp": timestamp
+            })
+
+        # ------------------------------
+        # Construir la salida final
+        # ------------------------------
+        result = []
+
+        for item in rows:
+
+            # CLICK MANUAL NORMAL
+            if item["user_click"] not in [None, "", "(not set)"]:
+                result.append({
+                    "session_id": item["session_id"],
                     "type": "click",
-                    "detail": user_click,
-                    "timestamp": dhm_value
+                    "detail": item["user_click"],
+                    "timestamp": item["timestamp"],
+                    "scrolls": []
                 })
 
-            # Agregar pageview si existe
-            if page_url not in [None, "", "(not set)"]:
-                data.append({
-                    "session_id": row.dimension_values[0].value,
+            # PAGEVIEW (aquí se insertan scrolls asociados a esa URL)
+            if item["page_url"] not in [None, "", "(not set)"]:
+                result.append({
+                    "session_id": item["session_id"],
                     "type": "pageview",
-                    "detail": page_url,
-                    "timestamp": dhm_value
+                    "detail": item["page_url"],
+                    "timestamp": item["timestamp"],
+                    "scrolls": url_scrolls.get(item["page_url"], [])
                 })
 
         # Ordenar por timestamp ascendente
-        data.sort(key=lambda x: x["timestamp"] if x["timestamp"] is not None else float('inf'))
+        result.sort(key=lambda x: x["timestamp"])
 
-        # Debug: ver qué se envía al frontend
-        print("DEBUG ga4_click_flow data:", data)
+        print("FINAL DATA:", result)
 
-        return JsonResponse({"data": data})
+        return JsonResponse({"data": result})
 
     except Exception as e:
         import traceback
         print(traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
-    
+
 
 @csrf_exempt
 def ai_resources_analysis(request):
