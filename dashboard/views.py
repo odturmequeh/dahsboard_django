@@ -6,9 +6,6 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import DateRange, Metric, Dimension, RunReportRequest
 from urllib.parse import urlparse
 from django.views.decorators.csrf import csrf_exempt
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI
-import json
 
 
 
