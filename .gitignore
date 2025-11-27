@@ -13,9 +13,6 @@ __pycache__/
 # Django staticfiles (NO se deben subir)
 staticfiles/
 
-# Vite build (NO se debe subir normalmente, salvo cuando forzamos)
-frontend/dist/
-
 # Node modules
 node_modules/
 
