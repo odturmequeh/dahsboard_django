@@ -395,7 +395,7 @@ const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10)); /
                 <tr>
                   <th className="p-2 text-left">#</th>
                   <th className="p-2 text-left">Timestamp</th>
-                  <th className="p-2 text-left">Evento TESTEEEEEE</th>
+                  <th className="p-2 text-left">Evento</th>
                   <th className="p-2 text-left">Elemento clickeado</th>
                   <th className="p-2 text-right">% Scroll</th> {/* nueva columna */}
                 </tr>
@@ -426,7 +426,7 @@ const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10)); /
                     <tr key={i} className="border-t">
                       <td className="p-2">{i + 1}</td>
                       <td className="p-2">{formattedTimestamp}</td>
-                      <td className="p-2 bg-yellow-100">{click.type}</td>
+                      <td className="p-2">{click.type}</td>
                       <td className="p-2 relative group">
                         <div className="truncate max-w-md">
                           {click.detail}
@@ -435,7 +435,7 @@ const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10)); /
                           {click.detail}
                         </div>
                       </td>
-                      <td className="p-2 text-right bg-yellow-100">{scrollValue}</td>
+                      <td className="p-2 text-right">{scrollValue}</td>
                     </tr>
                   );
                 })}
