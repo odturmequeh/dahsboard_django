@@ -143,7 +143,7 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATICFILES_DIRS = [
-    BASE_DIR / "frontend" / "dist" / "assets",  # solo la carpeta de assets
+    BASE_DIR / "backend" / "static",  # solo la carpeta de assets
 ]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
