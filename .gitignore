@@ -13,8 +13,6 @@ __pycache__/
 # Django staticfiles de collectstatic (NO se suben)
 staticfiles/
 
-
-
 # Node modules
 node_modules/
 
