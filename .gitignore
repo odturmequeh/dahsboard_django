@@ -10,8 +10,11 @@ temp_credentials/
 __pycache__/
 *.pyc
 
-# Django staticfiles (NO se deben subir)
+# Django staticfiles de collectstatic (NO se suben)
 staticfiles/
+
+# Vite build (NO subirlo, ya se copia a backend/static/)
+frontend/dist/
 
 # Node modules
 node_modules/
@@ -19,6 +22,6 @@ node_modules/
 # Logs
 *.log
 
-# Mac / Windows
+# OS junk files
 .DS_Store
 Thumbs.db
