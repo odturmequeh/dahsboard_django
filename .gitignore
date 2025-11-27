@@ -13,8 +13,7 @@ __pycache__/
 # Django staticfiles de collectstatic (NO se suben)
 staticfiles/
 
-# Vite build (NO subirlo, ya se copia a backend/static/)
-frontend/dist/
+
 
 # Node modules
 node_modules/
