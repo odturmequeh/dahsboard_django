@@ -151,3 +151,39 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# ===== DEBUGGING - REMOVER DESPUÉS =====
+import os
+
+if not DEBUG:
+    print("\n" + "="*60)
+    print("🔍 DEBUGGING STATIC FILES")
+    print("="*60)
+    
+    print(f"\n📂 BASE_DIR: {BASE_DIR}")
+    print(f"📂 STATIC_ROOT: {STATIC_ROOT}")
+    print(f"📂 STATICFILES_DIRS: {STATICFILES_DIRS}")
+    
+    # Verificar backend/static
+    backend_static = BASE_DIR / "backend" / "static" / "assets"
+    print(f"\n🔍 Verificando backend/static/assets/:")
+    if backend_static.exists():
+        print("   ✅ Existe")
+        for file in backend_static.iterdir():
+            print(f"   - {file.name}")
+    else:
+        print("   ❌ NO EXISTE")
+    
+    # Verificar staticfiles
+    staticfiles_assets = BASE_DIR / "staticfiles" / "assets"
+    print(f"\n🔍 Verificando staticfiles/assets/:")
+    if staticfiles_assets.exists():
+        print("   ✅ Existe")
+        for file in staticfiles_assets.iterdir():
+            print(f"   - {file.name}")
+    else:
+        print("   ❌ NO EXISTE")
+    
+    print("="*60 + "\n")
+# ===== FIN DEBUGGING =====
