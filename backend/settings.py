@@ -18,9 +18,12 @@ load_dotenv()
 
 
 
-GA4_CREDENTIALS = "/etc/secrets/ga4-service.json"
-print("CARGANDO .ENV DESDE:", os.getcwd())
-print("GA4 JSON PATH:", os.getenv("GA4_CREDENTIALS_JSON"))
+GA4_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "/etc/secrets/ga4-service.json")
+
+print("USANDO CREDENCIALES GA4:", GA4_CREDENTIALS)
+
+#print("CARGANDO .ENV DESDE:", os.getcwd())
+#print("GA4 JSON PATH:", os.getenv("GA4_CREDENTIALS_JSON"))
 
 
 
