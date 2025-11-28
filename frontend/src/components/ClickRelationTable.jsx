@@ -321,7 +321,7 @@ const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10)); /
                 <th className="p-2 text-left">Transaction ID</th>
                 <th className="p-2 text-left">Items Purchased</th>
                 <th className="p-2 text-left">Session ID</th>
-                <th className="p-2 text-right">Valor TEST</th>
+                <th className="p-2 text-right">Valor</th>
               </tr>
             </thead>
             <tbody>
