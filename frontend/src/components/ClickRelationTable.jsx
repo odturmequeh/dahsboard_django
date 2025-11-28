@@ -34,7 +34,7 @@ export default function ClickRelationTable() {
   const [loadingClickFlow, setLoadingClickFlow] = useState(false);
 
 
-  const API_URL = "https://dahsboard-django.onrender.com/api/dashboard/click_relation/";
+  const API_URL = "http://127.0.0.1:8000/api/dashboard/click_relation/";
 
   // --- FETCH DATA PRINCIPAL ---
   const fetchData = async (unit = null, start = null, end = null) => {
@@ -93,9 +93,11 @@ useEffect(() => {
 
     try {
       const url = new URL(
-        `https://dahsboard-django.onrender.com/api/dashboard/click_detail/${encodeURIComponent(elemento)}/`
+        `http://127.0.0.1:8000/api/dashboard/click_detail/${encodeURIComponent(elemento)}/`
       );
       if (selectedUnit) url.searchParams.append("unit", selectedUnit);
+      if (startDate) url.searchParams.append("start_date", startDate);
+      if (endDate) url.searchParams.append("end_date", endDate);
 
       const res = await fetch(url.toString());
       const json = await res.json();
@@ -117,7 +119,7 @@ const handleSessionClick = async (session_id) => {
   setClickFlowModalOpen(true);
   setLoadingClickFlow(true);
   try {
-    const url = new URL(`https://dahsboard-django.onrender.com/api/dashboard/user_click_flow/`);
+    const url = new URL(`http://127.0.0.1:8000/api/dashboard/user_click_flow/`);
     url.searchParams.append("session_id", session_id);
 
     const res = await fetch(url.toString());
@@ -319,7 +321,7 @@ const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10)); /
                 <th className="p-2 text-left">Transaction ID</th>
                 <th className="p-2 text-left">Items Purchased</th>
                 <th className="p-2 text-left">Session ID</th>
-                <th className="p-2 text-right">Valor</th>
+                <th className="p-2 text-right">Valor TEST</th>
               </tr>
             </thead>
             <tbody>

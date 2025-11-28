@@ -693,8 +693,16 @@ def ga4_click_detail(request, elemento):
             return JsonResponse({"error": "Credenciales no configuradas"}, status=500)
 
         client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
-        start_date = "2025-10-15"
-        end_date = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        # --- 1️⃣ FECHAS INGRESADAS POR EL USUARIO ---
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+
+        if not start_date:
+            start_date = "2025-10-15"
+
+        if not end_date:
+            end_date = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+
         unit = request.GET.get("unit", None)
 
         # --- 1️⃣ Traer detalle de compras por elemento ---
