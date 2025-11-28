@@ -4,7 +4,7 @@ export default function AIInsight({ results }) {
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState("");
 
-  const API_URL = "http://127.0.0.1:8000/api/dashboard/ai-resources-analysis/";
+  const API_URL = "https://dahsboard-django.onrender.com/api/dashboard/ai-resources-analysis/";
 
  const generateInsight = async () => {
   if (!results) return;
