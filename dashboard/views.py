@@ -731,6 +731,27 @@ def ga4_click_detail(request, elemento):
                     "string_filter": {"value": "portabilidad postpago", "match_type": "EXACT"}
                 })
 
+        # ============================
+        # REVENUE REAL POR DÍA
+        # ============================
+        daily_rev_response = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[Dimension(name="date")],
+                metrics=[Metric(name="purchaseRevenue")],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter={"and_group": {"expressions": [{"filter": f} for f in filters]}},
+                limit=1000,
+            )
+        )
+
+        # Diccionario: {'20250101': 12345.67}
+        real_revenue_by_day = {
+            row.dimension_values[0].value: float(row.metric_values[0].value or 0)
+            for row in daily_rev_response.rows
+        }
+
+
         response = client.run_report(
             RunReportRequest(
                 property=f"properties/{property_id}",
@@ -747,16 +768,19 @@ def ga4_click_detail(request, elemento):
             )
         )
 
-        modal_data = [
-            {
+        modal_data = []
+        for row in response.rows:
+            fecha = row.dimension_values[4].value  # YYYYMMDD
+            valor_real = real_revenue_by_day.get(fecha, 0)
+
+            modal_data.append({
                 "transaction_id": row.dimension_values[0].value,
                 "elemento": row.dimension_values[1].value,
                 "items_purchased": row.dimension_values[2].value,
                 "session_id_final": row.dimension_values[3].value,
-                "valor": float(row.metric_values[0].value or 0),
-            }
-            for row in response.rows
-        ]
+                "fecha": fecha,
+                "valor": valor_real,  # 👈 Revenue real corregido
+            })
 
         # --- 2️⃣ Traer todos los session_id que tengan flujo de clicks ---
         session_ids = list({row["session_id_final"] for row in modal_data if row["session_id_final"]})
@@ -803,6 +827,9 @@ def ga4_click_detail(request, elemento):
         import traceback
         print(traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
+
+
+
 
 
 @csrf_exempt
