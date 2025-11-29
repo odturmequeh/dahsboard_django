@@ -760,6 +760,7 @@ def ga4_click_detail(request, elemento):
                     Dimension(name="customEvent:elemento_click_home"),
                     Dimension(name="customEvent:items_purchased"),
                     Dimension(name="customEvent:session_id_final"),
+                    Dimension(name="date"),
                 ],
                 metrics=[Metric(name="purchaseRevenue")],
                 date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
