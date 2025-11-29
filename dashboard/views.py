@@ -680,36 +680,32 @@ def ga4_click_relation(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 
-
 @csrf_exempt
 def ga4_click_detail(request, elemento):
     """
-    Obtiene el detalle de transacciones para un elemento
-    y obtiene purchaseRevenue REAL por transactionId consultando GA4 día a día.
-    Si alguna transacción NO aparece con revenue => valor = 0.
+    Detalle de compras por elemento, con flag que indica si hay flujo de clicks disponible
+    para cada session_id.
     """
     try:
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         property_id = os.getenv("GA4_PROPERTY_ID")
-
         if not credentials_path or not property_id:
             return JsonResponse({"error": "Credenciales no configuradas"}, status=500)
 
         client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
-
-        # Fechas solicitadas
+        # --- 1️⃣ FECHAS INGRESADAS POR EL USUARIO ---
         start_date = request.GET.get("start_date")
         end_date = request.GET.get("end_date")
+
         if not start_date:
             start_date = "2025-10-15"
+
         if not end_date:
             end_date = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 
         unit = request.GET.get("unit", None)
 
-        # -------------------------
-        # 1. Filtros base
-        # -------------------------
+        # --- 1️⃣ Traer detalle de compras por elemento ---
         filters = [
             {
                 "field_name": "customEvent:elemento_click_home",
@@ -722,22 +718,40 @@ def ga4_click_detail(request, elemento):
             if unit_lower in ["terminales", "tecnologia"]:
                 filters.append({
                     "field_name": "customEvent:business_unit",
-                    "string_filter": {"value": unit_lower, "match_type": "EXACT"},
+                    "string_filter": {"value": unit_lower, "match_type": "EXACT"}
                 })
             elif unit_lower == "migracion":
                 filters.append({
                     "field_name": "customEvent:business_unit2",
-                    "string_filter": {"value": "migracion", "match_type": "EXACT"},
+                    "string_filter": {"value": "migracion", "match_type": "EXACT"}
                 })
             elif unit_lower == "portabilidad":
                 filters.append({
                     "field_name": "customEvent:business_unit2",
-                    "string_filter": {"value": "portabilidad postpago", "match_type": "EXACT"},
+                    "string_filter": {"value": "portabilidad postpago", "match_type": "EXACT"}
                 })
 
-        # -------------------------
-        # 2. Traer detalle de transacciones (NO revenue)
-        # -------------------------
+        # ============================
+        # REVENUE REAL POR DÍA
+        # ============================
+        daily_rev_response = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[Dimension(name="date")],
+                metrics=[Metric(name="purchaseRevenue")],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter={"and_group": {"expressions": [{"filter": f} for f in filters]}},
+                limit=1000,
+            )
+        )
+
+        # Diccionario: {'20250101': 12345.67}
+        real_revenue_by_day = {
+            row.dimension_values[0].value: float(row.metric_values[0].value or 0)
+            for row in daily_rev_response.rows
+        }
+
+
         response = client.run_report(
             RunReportRequest(
                 property=f"properties/{property_id}",
@@ -746,105 +760,108 @@ def ga4_click_detail(request, elemento):
                     Dimension(name="customEvent:elemento_click_home"),
                     Dimension(name="customEvent:items_purchased"),
                     Dimension(name="customEvent:session_id_final"),
-                    Dimension(name="date"),  # Necesario para buscar revenue por día
+                    Dimension(name="date"),
                 ],
-                metrics=[],  # SIN purchaseRevenue aquí.
+                metrics=[Metric(name="purchaseRevenue")],
                 date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                dimension_filter={"and_group": {"expressions": [{"filter": f} for f in filters]}},
-                limit=10000,
+                dimension_filter={"and_group": {"expressions": [{"filter": f} for f in filters]}} if filters else None,
+                limit=1000,
             )
         )
 
         modal_data = []
-        txs_by_day = {}
-
         for row in response.rows:
-            txid = row.dimension_values[0].value
-            fecha = row.dimension_values[4].value  # YYYYMMDD
+            fecha = None
+            if len(row.dimension_values) > 4:
+                fecha = row.dimension_values[4].value  # YYYYMMDD
 
-            # Para consultar por día después
-            txs_by_day.setdefault(fecha, []).append(txid)
+            # revenue real solo si hay fecha válida
+            # ============================
+            # Obtener revenue REAL por transactionId día a día
+            # ============================
+            valor_real = 0.0
+
+            if fecha:  # YYYYMMDD
+                try:
+                    rev_resp = client.run_report(
+                        RunReportRequest(
+                            property=f"properties/{property_id}",
+                            dimensions=[Dimension(name="transactionId")],
+                            metrics=[Metric(name="purchaseRevenue")],
+                            date_ranges=[DateRange(start_date=fecha, end_date=fecha)],
+                            dimension_filter={
+                                "and_group": {
+                                    "expressions": [
+                                        {
+                                            "filter": {
+                                                "field_name": "transactionId",
+                                                "string_filter": {
+                                                    "value": row.dimension_values[0].value,
+                                                    "match_type": "EXACT"
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            limit=1,
+                        )
+                    )
+
+                    if rev_resp.rows:
+                        valor_real = float(rev_resp.rows[0].metric_values[0].value or 0)
+
+                except:
+                    valor_real = 0.0
+
 
             modal_data.append({
-                "transaction_id": txid,
+                "transaction_id": row.dimension_values[0].value,
                 "elemento": row.dimension_values[1].value,
                 "items_purchased": row.dimension_values[2].value,
                 "session_id_final": row.dimension_values[3].value,
                 "fecha": fecha,
-                "valor": 0.0,   # se asignará después
+                "valor": valor_real,  # 👈 Revenue real corregido
             })
 
-        # -------------------------
-        # 3. Revenue por transactionId día a día
-        # -------------------------
-        revenue_map = {}  # {'YYYYMMDD': {'TXID123': 450000}}
-
-        for fecha, tx_list in txs_by_day.items():
-            try:
-                r = client.run_report(
-                    RunReportRequest(
-                        property=f"properties/{property_id}",
-                        dimensions=[Dimension(name="transactionId")],
-                        metrics=[Metric(name="purchaseRevenue")],
-                        date_ranges=[DateRange(start_date=fecha, end_date=fecha)],
-                        dimension_filter={"and_group": {"expressions": [{"filter": f} for f in filters]}},
-                        limit=10000,
-                    )
-                )
-
-                revenue_map[fecha] = {
-                    row.dimension_values[0].value: float(row.metric_values[0].value or 0)
-                    for row in r.rows
-                }
-            except:
-                revenue_map[fecha] = {}
-
-        # -------------------------
-        # 4. Asignar revenue exacto
-        # -------------------------
-        for row in modal_data:
-            fecha = row["fecha"]
-            txid = row["transaction_id"]
-
-            if fecha in revenue_map and txid in revenue_map[fecha]:
-                row["valor"] = revenue_map[fecha][txid]
-            else:
-                row["valor"] = 0.0  # regla 2
-
-        # -------------------------
-        # 5. Determinar si tiene flujo de clicks
-        # -------------------------
-        session_ids = list({r["session_id_final"] for r in modal_data if r["session_id_final"]})
-
+        # --- 2️⃣ Traer todos los session_id que tengan flujo de clicks ---
+        session_ids = list({row["session_id_final"] for row in modal_data if row["session_id_final"]})
         sessions_with_flow = set()
         if session_ids:
-            flow_resp = client.run_report(
+            flow_response = client.run_report(
                 RunReportRequest(
                     property=f"properties/{property_id}",
-                    dimensions=[Dimension(name="customEvent:session_id_final")],
+                    dimensions=[
+                        Dimension(name="customEvent:session_id_final"),
+                    ],
+                    metrics=[],
                     date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
                     dimension_filter={
                         "and_group": {
                             "expressions": [
-                                {"filter": {
-                                    "field_name": "eventName",
-                                    "string_filter": {"value": "user_click_event", "match_type": "EXACT"}
-                                }},
-                                {"filter": {
-                                    "field_name": "customEvent:session_id_final",
-                                    "in_list_filter": {"values": session_ids}
-                                }},
+                                {
+                                    "filter": {
+                                        "field_name": "eventName",
+                                        "string_filter": {"value": "user_click_event", "match_type": "EXACT"}
+                                    }
+                                },
+                                {
+                                    "filter": {
+                                        "field_name": "customEvent:session_id_final",
+                                        "in_list_filter": {"values": session_ids}
+                                    }
+                                }
                             ]
                         }
                     },
-                    limit=10000,
+                    limit=1000,
                 )
             )
+            sessions_with_flow = {row.dimension_values[0].value for row in flow_response.rows}
 
-            sessions_with_flow = {row.dimension_values[0].value for row in flow_resp.rows}
-
-        for r in modal_data:
-            r["has_click_flow"] = r["session_id_final"] in sessions_with_flow
+        # --- 3️⃣ Marcar has_click_flow ---
+        for row in modal_data:
+            row["has_click_flow"] = row["session_id_final"] in sessions_with_flow
 
         return JsonResponse({"data": modal_data})
 
@@ -852,6 +869,7 @@ def ga4_click_detail(request, elemento):
         import traceback
         print(traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
+
 
 
 
