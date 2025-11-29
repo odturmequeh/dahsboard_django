@@ -770,8 +770,12 @@ def ga4_click_detail(request, elemento):
 
         modal_data = []
         for row in response.rows:
-            fecha = row.dimension_values[4].value  # YYYYMMDD
-            valor_real = real_revenue_by_day.get(fecha, 0)
+            fecha = None
+            if len(row.dimension_values) > 4:
+                fecha = row.dimension_values[4].value  # YYYYMMDD
+
+            # revenue real solo si hay fecha válida
+            valor_real = real_revenue_by_day.get(fecha, 0) if fecha else 0
 
             modal_data.append({
                 "transaction_id": row.dimension_values[0].value,
