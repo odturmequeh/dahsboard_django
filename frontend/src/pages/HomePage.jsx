@@ -29,6 +29,12 @@ export default function HomePage() {
         >
           Load Time Dashboard
         </button>
+        <button
+          onClick={() => navigate("/genia")}
+          className="px-8 py-4 bg-gradient-to-r from-orange-500 to-orange-400 text-white rounded-xl shadow-lg hover:from-orange-600 hover:to-orange-500 transition-all text-lg font-semibold"
+        >
+          Genia Dashboard
+        </button>
       </div>
 
       {/* Footer */}

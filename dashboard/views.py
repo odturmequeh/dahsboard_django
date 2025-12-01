@@ -3,9 +3,10 @@ from datetime import datetime, timedelta
 import os
 from django.http import JsonResponse
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
-from google.analytics.data_v1beta.types import DateRange, Metric, Dimension, RunReportRequest
+from google.analytics.data_v1beta.types import DateRange, Metric, Dimension, RunReportRequest, FilterExpression, Filter
 from urllib.parse import urlparse
 from django.views.decorators.csrf import csrf_exempt
+from collections import defaultdict
 
 
 
@@ -414,26 +415,29 @@ def ga4_page_resources(request):
             RunReportRequest(
                 property=f"properties/{property_id}",
                 dimensions=[
-                    Dimension(name="eventName"),  # ← AGREGAR: Para filtrar por evento
+                    Dimension(name="eventName"),
                     Dimension(name="customEvent:page_location_loadPage"),
                     Dimension(name="customEvent:resource_name_loadPage"),
                     Dimension(name="customEvent:resource_type_loadPage"),
+                    Dimension(name="hour"),
+                    Dimension(name="date"),  # ✅ ACTIVADO
                 ],
                 metrics=[
-                    Metric(name="eventCount"),  # ← CRÍTICO: Necesario para promediar
+                    Metric(name="eventCount"),
                     Metric(name="customEvent:total_duration_loadPage"),
                     Metric(name="customEvent:resource_total_duration_loadPage"),
                     Metric(name="customEvent:resource_total_size_loadPage"),
                     Metric(name="customEvent:resource_repeat_count_loadPage"),
                 ],
                 date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                limit=10000,
+                limit=50000,  # ✅ Aumentado para pruebas con date dimension
             )
         )
 
         # 4. Procesar datos - Filtrar por evento resource_performance
         grouped = {}
         filtered_count = 0
+        total_rows = len(response.rows)  # ✅ Contar filas totales
 
         for row in response.rows:
             try:
@@ -441,6 +445,8 @@ def ga4_page_resources(request):
                 page_path = row.dimension_values[1].value
                 resource_name = row.dimension_values[2].value
                 resource_type = row.dimension_values[3].value
+                hour = row.dimension_values[4].value
+                day = row.dimension_values[5].value
                 
                 event_count = float(row.metric_values[0].value or 0)
                 page_duration = float(row.metric_values[1].value or 0)
@@ -448,16 +454,7 @@ def ga4_page_resources(request):
                 transfer_size = float(row.metric_values[3].value or 0)
                 resource_repeat = float(row.metric_values[4].value or 0)
 
-                # DEBUG: Imprimir primeras 3 filas para ver qué valores llegan
-                if filtered_count < 3:
-                    print(f"🔍 DEBUG Row {filtered_count}:")
-                    print(f"  Resource: {resource_name}")
-                    print(f"  Event Count: {event_count}")
-                    print(f"  Resource Duration: {resource_duration}")
-                    print(f"  Type: {resource_type}")
-
             except (ValueError, IndexError) as e:
-                print(f"❌ Error parsing row: {e}")
                 continue
 
             # FILTRO CRÍTICO: Solo eventos resource_performance
@@ -466,9 +463,9 @@ def ga4_page_resources(request):
 
             # Normalizar y filtrar por URL
             normalized_page = normalize_url(page_path.lower())
+            
             if normalized_page != normalized_search:
                 continue
-
             filtered_count += 1
 
             # Extraer hostname del recurso
@@ -497,12 +494,34 @@ def ga4_page_resources(request):
                     "total_duration": 0,
                     "total_repeat": 0,
                     "total_size": 0,
+                    "hourly": {},
+                    "daily": {}  # ✅ INICIALIZADO CORRECTAMENTE
                 }
 
             grouped[key]["event_count"] += event_count
             grouped[key]["total_duration"] += resource_duration
             grouped[key]["total_repeat"] += resource_repeat
             grouped[key]["total_size"] += transfer_size
+
+            # ⭐️ GUARDAR POR HORA
+            if hour not in grouped[key]["hourly"]:
+                grouped[key]["hourly"][hour] = {
+                    "event_count": 0,
+                    "duration_total": 0
+                }
+
+            grouped[key]["hourly"][hour]["event_count"] += event_count
+            grouped[key]["hourly"][hour]["duration_total"] += resource_duration
+
+            # ⭐️ GUARDAR POR DÍA (CORREGIDO)
+            if day not in grouped[key]["daily"]:  # ✅ CORRECCIÓN: grouped[key]["daily"]
+                grouped[key]["daily"][day] = {
+                    "event_count": 0,
+                    "duration_total": 0
+                }
+
+            grouped[key]["daily"][day]["event_count"] += event_count
+            grouped[key]["daily"][day]["duration_total"] += resource_duration
 
         # 5. Calcular promedios usando event_count
         if filtered_count == 0:
@@ -515,7 +534,6 @@ def ga4_page_resources(request):
         resources = []
         for name, data in grouped.items():
             # CLAVE: Dividir entre event_count (cantidad real de eventos disparados)
-            # NO entre "count" (cantidad de filas de GA4)
             if data["event_count"] > 0:
                 avg_duration = data["total_duration"] / data["event_count"]
                 avg_repeat = data["total_repeat"] / data["event_count"]
@@ -523,22 +541,35 @@ def ga4_page_resources(request):
             else:
                 avg_duration = avg_repeat = avg_size = 0
 
+            # ⭐️ Calcular promedio por HORA
+            hourly_avg = {
+                hour: round(
+                    bucket["duration_total"] / bucket["event_count"], 3
+                )
+                for hour, bucket in data["hourly"].items()
+                if bucket["event_count"] > 0  # ✅ Añadido para evitar división por cero
+            }
+
+            # ⭐️ Calcular promedio por DÍA (CORREGIDO)
+            daily_avg = {
+                d: round(v["duration_total"] / v["event_count"], 3)
+                for d, v in data["daily"].items()
+                if v["event_count"] > 0
+            }
+
             resources.append({
                 "name": name,
                 "type": data["type"],
-                "duration_avg": round(avg_duration, 3),  # 3 decimales para valores como 0.324
+                "duration_avg": round(avg_duration, 3),
                 "repeat_avg": round(avg_repeat, 2),
-                "size_avg": round(avg_size / 1024, 2) if avg_size > 0 else 0,  # Convertir a KB
+                "size_avg": round(avg_size / 1024, 2) if avg_size > 0 else 0,
+                "hourly": hourly_avg,
+                "daily": daily_avg,  # ✅ INCLUIDO EN RESPUESTA
             })
 
         # Ordenar por duración descendente
         resources.sort(key=lambda x: x["duration_avg"], reverse=True)
-        # 🔎 IMPRIMIR LAS FILAS CON avg_duration > 10
-        print("\n=== RECURSOS CON avg_duration > 10s ===")
-        for r in resources:
-            if r["duration_avg"] > 10:
-                print(f"⚠️ {r['name']} | {r['type']} | avg_duration: {r['duration_avg']} sec | repeat_avg: {r['repeat_avg']}")
-        print("=== FIN ===\n")
+
         return JsonResponse({
             "url": search_url,
             "total_resources": len(resources),
@@ -550,6 +581,7 @@ def ga4_page_resources(request):
         import traceback
         print(f"Error en GA4 Page Resources: {traceback.format_exc()}")
         return JsonResponse({"error": str(e)}, status=500)
+    
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -881,8 +913,6 @@ def ga4_click_detail(request, elemento):
 
 
 
-
-
 @csrf_exempt
 def ga4_click_flow(request):
     """
@@ -996,5 +1026,264 @@ def ga4_click_flow(request):
         print(traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
 
+
+
+@csrf_exempt
+def ga4_genia_summary(request):
+    """
+    Resumen de métricas principales del evento GENIA:
+    - Clicks (eventCount)
+    - Sesiones únicas (session_id_final)
+    - Ventas por coincidencia con purchase
+    - Ingresos totales
+    """
+    try:
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        property_id = os.getenv("GA4_PROPERTY_ID")
+        if not credentials_path or not property_id:
+            return JsonResponse({"error": "Credenciales no configuradas"}, status=500)
+
+        client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+        # ============================
+        # FECHAS
+        # ============================
+        start_date = request.GET.get("start_date")
+        end_date = request.GET.get("end_date")
+
+        if not start_date:
+            start_date = "2025-11-22"
+
+        if not end_date:
+            end_date = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # ============================
+        # 1️⃣ EVENTOS GENIA
+        # ============================
+
+        genia_request = RunReportRequest(
+            property=f"properties/{property_id}",
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[
+                Dimension(name="eventName"),
+                Dimension(name="customEvent:session_id_final"),
+            ],
+            metrics=[Metric(name="eventCount")],
+            dimension_filter={
+                "filter": {
+                    "field_name": "eventName",
+                    "string_filter": {"value": "Genia", "match_type": "EXACT"}
+                }
+            },
+            limit=100000
+        )
+
+        genia_response = client.run_report(genia_request)
+
+        clicks = 0
+        sesiones = set()
+
+        print("========== RAW GA4 ROWS (first 5) ==========")
+        for i, row in enumerate(genia_response.rows[:5]):
+            print(
+                f"Row {i+1}: ",
+                [d.value for d in row.dimension_values],
+                [m.value for m in row.metric_values]
+            )
+
+        for row in genia_response.rows:
+            session_id = row.dimension_values[1].value
+            count = int(row.metric_values[0].value or 0)
+
+            clicks += count
+
+            if session_id and session_id != "(not set)":
+                sesiones.add(session_id)
+
+        # ============================
+        # 2️⃣ PURCHASES (consulta única)
+        # ============================
+
+        purchase_request = RunReportRequest(
+            property=f"properties/{property_id}",
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            dimensions=[
+                Dimension(name="customEvent:session_id_final"),
+            ],
+            metrics=[Metric(name="purchaseRevenue")],
+            dimension_filter={
+                "filter": {
+                    "field_name": "eventName",
+                    "string_filter": {"value": "purchase", "match_type": "EXACT"}
+                }
+            },
+            limit=100000
+        )
+
+        purchase_response = client.run_report(purchase_request)
+
+        purchase_map = {}
+        for row in purchase_response.rows:
+            sid = row.dimension_values[0].value
+            revenue = float(row.metric_values[0].value or 0)
+
+            if sid and sid != "(not set)":
+                purchase_map[sid] = purchase_map.get(sid, 0) + revenue
+
+        # ============================
+        # 3️⃣ VENTAS + INGRESOS
+        # ============================
+
+        ventas = 0
+        ingresos_totales = 0.0
+
+        for sid in sesiones:
+            if sid in purchase_map:
+                ventas += 1
+                ingresos_totales += purchase_map[sid]
+
+        # ============================
+        # 4️⃣ JSON FINAL
+        # ============================
+
+        return JsonResponse({
+            "clicks": clicks,
+            "sesiones": len(sesiones),
+            "ventas": ventas,
+            "ingresos": ingresos_totales
+        })
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+
+
+
+@csrf_exempt
+def ga4_genia_ingresos_por_dia(request):
+    """
+    Obtiene ingresos totales por día asociados únicamente a sesiones del evento Genia.
+    Devuelve un listado de {date, ingresos, detalle_ventas} para el rango indicado.
+    """
+    try:
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        property_id = os.getenv("GA4_PROPERTY_ID")
+        if not credentials_path or not property_id:
+            return JsonResponse({"error": "Credenciales no configuradas"}, status=500)
+
+        client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+        # -------------------
+        # Fechas
+        # -------------------
+        start_date = request.GET.get("start_date") or (datetime.today() - timedelta(days=28)).strftime("%Y-%m-%d")
+        end_date = request.GET.get("end_date") or datetime.today().strftime("%Y-%m-%d")
+
+        # -------------------
+        # 1️⃣ Extraer session_ids de Genia
+        # -------------------
+        genia_sessions = {}
+        offset = 0
+        limit = 100000
+        while True:
+            genia_request = RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[Dimension(name="eventName"), Dimension(name="customEvent:session_id_final")],
+                metrics=[Metric(name="eventCount")],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter=FilterExpression(
+                    filter=Filter(
+                        field_name="eventName",
+                        string_filter={"value": "Genia", "match_type": Filter.StringFilter.MatchType.EXACT}
+                    )
+                ),
+                limit=limit,
+                offset=offset
+            )
+            response = client.run_report(genia_request)
+            if not response.rows:
+                break
+
+            for row in response.rows:
+                sid = row.dimension_values[1].value
+                if sid and sid != "(not set)":
+                    genia_sessions[sid] = True
+
+            if len(response.rows) < limit:
+                break
+            offset += limit
+
+        # -------------------
+        # 2️⃣ Extraer purchases de Genia
+        # -------------------
+        ingresos_por_dia = defaultdict(lambda: {"ingresos": 0, "detalle_ventas": []})
+        offset = 0
+        while True:
+            purchase_request = RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="customEvent:session_id_final"),
+                    Dimension(name="date"),
+                    Dimension(name="transactionId"),
+                    Dimension(name="customEvent:items_purchased")  # si GA4 tiene productos comprados
+                ],
+                metrics=[Metric(name="purchaseRevenue")],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter=FilterExpression(
+                    filter=Filter(
+                        field_name="eventName",
+                        string_filter={"value": "purchase", "match_type": Filter.StringFilter.MatchType.EXACT}
+                    )
+                ),
+                limit=limit,
+                offset=offset
+            )
+            purchase_response = client.run_report(purchase_request)
+            if not purchase_response.rows:
+                break
+
+            for row in purchase_response.rows:
+                sid = row.dimension_values[0].value
+                date_raw = row.dimension_values[1].value
+                trx_id = row.dimension_values[2].value if len(row.dimension_values) > 2 else "N/A"
+                items_raw = row.dimension_values[3].value if len(row.dimension_values) > 3 else "(sin_producto)"
+                revenue = float(row.metric_values[0].value or 0)
+
+                # Solo sumar si la session_id pertenece a Genia
+                if sid in genia_sessions:
+                    try:
+                        date_fmt = datetime.strptime(date_raw, "%Y%m%d").strftime("%Y-%m-%d")
+                    except:
+                        date_fmt = date_raw
+
+                    ingresos_por_dia[date_fmt]["ingresos"] += revenue
+                    ingresos_por_dia[date_fmt]["detalle_ventas"].append({
+                        "session_id": sid,
+                        "transaction_id": trx_id,
+                        "producto": items_raw.split(",")[0].strip() if items_raw else "(sin_producto)",
+                        "valor": round(revenue, 2)
+                    })
+
+            if len(purchase_response.rows) < limit:
+                break
+            offset += limit
+
+        # -------------------
+        # Formatear resultado final
+        # -------------------
+        resultados = [
+            {"date": d, "ingresos": round(v["ingresos"], 2), "detalle_ventas": v["detalle_ventas"]}
+            for d, v in sorted(ingresos_por_dia.items())
+        ]
+
+        return JsonResponse({"ingresos_por_dia": resultados})
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return JsonResponse({"error": str(e)}, status=500)
 
 

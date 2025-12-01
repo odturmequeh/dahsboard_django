@@ -10,6 +10,8 @@ urlpatterns = [
     path('dashboard/click_relation/', views.ga4_click_relation, name='click_relation_data'),
     path('dashboard/click_detail/<str:elemento>/', views.ga4_click_detail, name='click_detail_data'),
     path("dashboard/user_click_flow/", views.ga4_click_flow, name="user_click_flow"),  
+    path("dashboard/genia-summary/", views.ga4_genia_summary, name="ga4_dashboard_summary"),
+    path("dashboard/genia-daily-chart/", views.ga4_genia_ingresos_por_dia, name="ga4_dashboard_daily-chart"),
    
 
 ]

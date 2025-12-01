@@ -1,4 +1,13 @@
 import React, { useState } from "react";
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from "recharts";
 
 export default function PageResources({ startDate, endDate }) {
   const [searchUrl, setSearchUrl] = useState("");
@@ -7,7 +16,9 @@ export default function PageResources({ startDate, endDate }) {
   const [error, setError] = useState(null);
   const [visibleRows, setVisibleRows] = useState(5);
 
-  // Cambié la URL de localhost por la de Render
+  const [selectedResource, setSelectedResource] = useState(null); // 🌟 Modal
+  
+
   const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard";
 
   const handleSearch = async () => {
@@ -22,7 +33,6 @@ export default function PageResources({ startDate, endDate }) {
     setResults(null);
     setVisibleRows(5);
 
-    // Simular pequeño delay para liberar el hilo
     await new Promise(resolve => setTimeout(resolve, 30));
 
     try {
@@ -47,7 +57,6 @@ export default function PageResources({ startDate, endDate }) {
       }
 
       setResults(data);
-      console.log("📊 Agrupaciones calculadas:", data);
 
     } catch (err) {
       console.error("❌ Error al buscar recursos:", err);
@@ -120,44 +129,54 @@ export default function PageResources({ startDate, endDate }) {
           </div>
 
           {/* Tabla */}
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse">
-              <thead>
-                <tr className="bg-gray-100">
-                  <th className="p-3 text-left text-sm font-bold text-gray-700 border-b-2">
-                    Resource Name / Dominio
-                  </th>
-                  <th className="p-3 text-left text-sm font-bold text-gray-700 border-b-2">
-                    Type
-                  </th>
-                  <th className="p-3 text-center text-sm font-bold text-gray-700 border-b-2">
-                    Duration Avg
-                  </th>
-                  <th className="p-3 text-center text-sm font-bold text-gray-700 border-b-2">
-                    Repeat
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {results.resources.slice(0, visibleRows).map((resource, idx) => (
-                  <tr key={idx} className="border-b hover:bg-gray-50 transition-colors">
-                    <td className="p-3 text-sm text-gray-700 break-all">
-                      {resource.name}
-                    </td>
-                    <td className="p-3 text-sm text-gray-600">
-                      {resource.type}
-                    </td>
-                    <td className="p-3 text-center text-sm font-medium text-gray-700">
-                      {resource.duration_avg.toFixed(2)}
-                    </td>
-                    <td className="p-3 text-center text-sm text-gray-600">
-                      {resource.repeat_avg.toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+<div className="overflow-x-auto relative">
+  <table className="w-full border-collapse">
+    <thead>
+      <tr className="bg-gray-100">
+        <th className="p-3 text-left text-sm font-bold text-gray-700 border-b-2">
+          Resource Name / Dominio
+        </th>
+        <th className="p-3 text-left text-sm font-bold text-gray-700 border-b-2">
+          Type
+        </th>
+        <th className="p-3 text-center text-sm font-bold text-gray-700 border-b-2">
+          Duration Avg
+        </th>
+        <th className="p-3 text-center text-sm font-bold text-gray-700 border-b-2">
+          Repeat
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      {results.resources.slice(0, visibleRows).map((resource, idx) => (
+        <tr
+          key={idx}
+          onClick={() => setSelectedResource(resource)} // 🌟 Abrir modal
+          className="border-b cursor-pointer relative
+                     hover:bg-red-50 hover:shadow-md transition-all duration-200"
+        >
+          <td className="p-3 text-sm text-gray-700 break-all relative group">
+            {resource.name}
+            {/* Tooltip */}
+            <span className="absolute left-1/2 -top-6 transform -translate-x-1/2
+                             bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0
+                             group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
+              Da click para ver detalle
+            </span>
+          </td>
+          <td className="p-3 text-sm text-gray-600">{resource.type}</td>
+          <td className="p-3 text-center text-sm font-medium text-gray-700">
+            {resource.duration_avg.toFixed(2)}
+          </td>
+          <td className="p-3 text-center text-sm text-gray-600">
+            {resource.repeat_avg.toFixed(2)}
+          </td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+</div>
+
 
           {/* Botón Mostrar más */}
           {visibleRows < results.resources.length && (
@@ -172,6 +191,109 @@ export default function PageResources({ startDate, endDate }) {
           )}
         </div>
       )}
+
+{/* ==========================
+   🌟 MODAL DE DETALLE
+=========================== */}
+{selectedResource && (
+  <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 overflow-auto">
+    <div className="bg-white rounded-2xl shadow-xl p-6 w-[90%] max-w-5xl max-h-[90vh] animate-fadeIn overflow-y-auto">
+
+      <h2 className="text-xl font-bold mb-4 break-all">
+        {selectedResource.name}
+      </h2>
+
+      <p className="text-gray-700 text-sm">
+        <strong>Tipo:</strong> {selectedResource.type}
+      </p>
+
+      <p className="text-gray-700 text-sm mt-2">
+        <strong>Duración promedio:</strong>{" "}
+        {selectedResource.duration_avg.toFixed(2)} ms
+      </p>
+
+      <p className="text-gray-700 text-sm mt-2">
+        <strong>Repetición promedio:</strong>{" "}
+        {selectedResource.repeat_avg.toFixed(2)}
+      </p>
+
+      {/* ==========================
+            📊 GRÁFICAS LADO A LADO
+      =========================== */}
+      <div className="mt-6 flex gap-6 w-full flex-wrap">
+        {/* Gráfico por día */}
+        {selectedResource.daily && (
+          <div className="flex-1 min-w-[300px]">
+            <h3 className="text-md font-semibold mb-2">📆 Promedio por día</h3>
+            <div className="w-full h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={Object.keys(selectedResource.daily).map((day) => ({
+                    day,
+                    duration: selectedResource.daily[day],
+                  }))}
+                >
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="day"
+                    tick={{ fontSize: 10 }}
+                    angle={-30}
+                    textAnchor="end"
+                    height={50}
+                  />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip formatter={(v) => `${v} ms`} />
+                  <Line type="monotone" dataKey="duration" stroke="#005BE6" strokeWidth={2} dot />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {/* Gráfico por hora */}
+        {selectedResource.hourly && (
+          <div className="flex-1 min-w-[300px]">
+            <h3 className="text-md font-semibold mb-2">⏱ Promedio por hora</h3>
+            <div className="w-full h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={Object.keys(selectedResource.hourly).map((hour) => ({
+                    hour,
+                    duration: selectedResource.hourly[hour],
+                  }))}
+                >
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="hour"
+                    tick={{ fontSize: 11 }}
+                    label={{ value: "Hora", position: "insideBottomRight", offset: -5 }}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    label={{ value: "ms", angle: -90, position: "insideLeft" }}
+                  />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="duration" stroke="#E60000" strokeWidth={2} dot />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Botón cerrar */}
+      <button
+        onClick={() => setSelectedResource(null)}
+        className="mt-6 w-full bg-[#E60000] text-white py-2 rounded-lg hover:bg-red-700 transition"
+      >
+        Cerrar
+      </button>
+
+    </div>
+  </div>
+)}
+
+
     </div>
   );
 }
