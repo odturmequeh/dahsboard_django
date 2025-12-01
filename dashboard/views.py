@@ -773,40 +773,72 @@ def ga4_click_detail(request, elemento):
         # REVENUE POR transactionId (correcto)
         # ============================
 
+                # =====================
+        # Revenue por transactionId en su fecha exacta
+        # =====================
+
         modal_data = []
 
         for row in response.rows:
+
             transaction_id = row.dimension_values[0].value
             elemento_val = row.dimension_values[1].value
             items_purchased_val = row.dimension_values[2].value
             session_id_final_val = row.dimension_values[3].value
-            fecha = row.dimension_values[4].value  # YYYYMMDD
-            valor_api = row.metric_values[0].value
+            fecha_raw = row.dimension_values[4].value  # YYYYMMDD
 
-            # Si GA4 NO entrega revenue, poner 0
-            try:
-                valor_real = float(valor_api) if valor_api not in [None, "", "null"] else 0
-            except:
-                valor_real = 0
+            # Convertir fecha a YYYY-MM-DD
+            fecha = f"{fecha_raw[:4]}-{fecha_raw[4:6]}-{fecha_raw[6:]}"
 
+            # --- Consulta puntual GA4: purchaseRevenue de ese transactionId en ese día ---
+            revenue_request = RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="transactionId"),
+                    Dimension(name="eventName"),
+                ],
+                metrics=[Metric(name="purchaseRevenue")],
+                date_ranges=[DateRange(start_date=fecha, end_date=fecha)],
+                dimension_filter={
+                    "and_group": {
+                        "expressions": [
+                            {
+                                "filter": {
+                                    "field_name": "transactionId",
+                                    "string_filter": {"value": transaction_id, "match_type": "EXACT"}
+                                }
+                            },
+                            {
+                                "filter": {
+                                    "field_name": "eventName",
+                                    "string_filter": {"value": "purchase", "match_type": "EXACT"}
+                                }
+                            }
+                        ]
+                    }
+                },
+                limit=1
+            )
+
+            revenue_response = client.run_report(revenue_request)
+
+            # Extraer revenue
+            valor_real = 0
+            if revenue_response.rows:
+                valor_api = revenue_response.rows[0].metric_values[0].value
+                try:
+                    valor_real = float(valor_api) if valor_api not in [None, "", "null"] else 0
+                except:
+                    valor_real = 0
+
+            # Construir registro final
             modal_data.append({
                 "transaction_id": transaction_id,
                 "elemento": elemento_val,
                 "items_purchased": items_purchased_val,
                 "session_id_final": session_id_final_val,
-                "fecha": fecha,
-                "valor": valor_real,  # 👈 Revenue por transacción (correcto)
-            })
-
-
-
-            modal_data.append({
-                "transaction_id": row.dimension_values[0].value,
-                "elemento": row.dimension_values[1].value,
-                "items_purchased": row.dimension_values[2].value,
-                "session_id_final": row.dimension_values[3].value,
-                "fecha": fecha,
-                "valor": valor_real,  # 👈 Revenue real corregido
+                "fecha": fecha_raw,
+                "valor": valor_real,  # ✔️ Revenue exacto por transacción en su día
             })
 
         # --- 2️⃣ Traer todos los session_id que tengan flujo de clicks ---
