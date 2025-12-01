@@ -769,50 +769,35 @@ def ga4_click_detail(request, elemento):
             )
         )
 
+                # ============================
+        # REVENUE POR transactionId (correcto)
+        # ============================
+
         modal_data = []
+
         for row in response.rows:
-            fecha = None
-            if len(row.dimension_values) > 4:
-                fecha = row.dimension_values[4].value  # YYYYMMDD
+            transaction_id = row.dimension_values[0].value
+            elemento_val = row.dimension_values[1].value
+            items_purchased_val = row.dimension_values[2].value
+            session_id_final_val = row.dimension_values[3].value
+            fecha = row.dimension_values[4].value  # YYYYMMDD
+            valor_api = row.metric_values[0].value
 
-            # revenue real solo si hay fecha válida
-            # ============================
-            # Obtener revenue REAL por transactionId día a día
-            # ============================
-            valor_real = 0.0
+            # Si GA4 NO entrega revenue, poner 0
+            try:
+                valor_real = float(valor_api) if valor_api not in [None, "", "null"] else 0
+            except:
+                valor_real = 0
 
-            if fecha:  # YYYYMMDD
-                try:
-                    rev_resp = client.run_report(
-                        RunReportRequest(
-                            property=f"properties/{property_id}",
-                            dimensions=[Dimension(name="transactionId")],
-                            metrics=[Metric(name="purchaseRevenue")],
-                            date_ranges=[DateRange(start_date=fecha, end_date=fecha)],
-                            dimension_filter={
-                                "and_group": {
-                                    "expressions": [
-                                        {
-                                            "filter": {
-                                                "field_name": "transactionId",
-                                                "string_filter": {
-                                                    "value": row.dimension_values[0].value,
-                                                    "match_type": "EXACT"
-                                                }
-                                            }
-                                        }
-                                    ]
-                                }
-                            },
-                            limit=1,
-                        )
-                    )
+            modal_data.append({
+                "transaction_id": transaction_id,
+                "elemento": elemento_val,
+                "items_purchased": items_purchased_val,
+                "session_id_final": session_id_final_val,
+                "fecha": fecha,
+                "valor": valor_real,  # 👈 Revenue por transacción (correcto)
+            })
 
-                    if rev_resp.rows:
-                        valor_real = float(rev_resp.rows[0].metric_values[0].value or 0)
-
-                except:
-                    valor_real = 0.0
 
 
             modal_data.append({
