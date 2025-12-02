@@ -371,19 +371,29 @@ def ga4_funnel_data(request):
 
 def ga4_page_resources(request):
     """
-    Obtiene recursos de una página con 3 consultas optimizadas:
-    A: Datos generales por recurso
-    B: Agregado por hora
-    C: Agregado por día
+    Optimizado para entornos de muy baja RAM como Render:
+    - No usa diccionarios anidados
+    - No acumula estructuras de gran tamaño
+    - 3 consultas separadas
+    - Solo guarda lo estrictamente necesario
     """
     try:
+        import os
+        from google.analytics.data_v1beta import BetaAnalyticsDataClient
+        from google.analytics.data_v1beta.types import RunReportRequest, FilterExpression, Filter, DateRange, Dimension, Metric
+        from urllib.parse import urlparse
+        from datetime import datetime, timedelta
+        from django.http import JsonResponse
+
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         property_id = os.getenv("GA4_PROPERTY_ID")
 
         if not credentials_path or not property_id:
             return JsonResponse({"error": "Credenciales o Property ID faltantes"}, status=500)
 
+        # -------------------------------------------------------------
         # Parámetros
+        # -------------------------------------------------------------
         search_url = request.GET.get("url")
         if not search_url:
             return JsonResponse({"error": "Parámetro ?url requerido"}, status=400)
@@ -397,7 +407,9 @@ def ga4_page_resources(request):
             start_date = start_date_obj.strftime("%Y-%m-%d")
             end_date = end_date_obj.strftime("%Y-%m-%d")
 
-        # Normalizar URL
+        # -------------------------------------------------------------
+        # Normalizar URL una sola vez
+        # -------------------------------------------------------------
         def normalize(url):
             try:
                 if not url.startswith("http"):
@@ -411,185 +423,187 @@ def ga4_page_resources(request):
 
         client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
 
-        # =====================================================================================
-        # 1) CONSULTA A → Datos generales
-        # =====================================================================================
-        query_general = RunReportRequest(
-            property=f"properties/{property_id}",
-            dimensions=[
-                Dimension(name="customEvent:page_location_loadPage"),
-                Dimension(name="customEvent:resource_name_loadPage"),
-                Dimension(name="customEvent:resource_type_loadPage"),
-            ],
-            metrics=[
-                Metric(name="eventCount"),
-                Metric(name="customEvent:total_duration_loadPage"),
-                Metric(name="customEvent:resource_total_size_loadPage"),
-                Metric(name="customEvent:resource_repeat_count_loadPage"),
-            ],
-            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-            dimension_filter=FilterExpression(
-                filter=Filter(
-                    field_name="eventName",
-                    string_filter=Filter.StringFilter(
-                        match_type=Filter.StringFilter.MatchType.EXACT,
-                        value="resource_performance"
-                    )
+        # Filtro común
+        event_filter = FilterExpression(
+            filter=Filter(
+                field_name="eventName",
+                string_filter=Filter.StringFilter(
+                    match_type=Filter.StringFilter.MatchType.EXACT,
+                    value="resource_performance"
                 )
-            ),
-            limit=5000
+            )
         )
 
-        res_general = client.run_report(query_general)
+        # ==============================================================
+        # 1) CONSULTA A → Datos generales
+        # ==============================================================
+        res_general = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="customEvent:page_location_loadPage"),
+                    Dimension(name="customEvent:resource_name_loadPage"),
+                    Dimension(name="customEvent:resource_type_loadPage"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                    Metric(name="customEvent:total_duration_loadPage"),
+                    Metric(name="customEvent:resource_total_size_loadPage"),
+                    Metric(name="customEvent:resource_repeat_count_loadPage"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter=event_filter,
+                limit=5000
+            )
+        )
 
-        # Estructura base
-        resources = {}
+        # Estructura minimizada
+        summary = {}  # solo { resource_name: {small counters} }
 
+        # Procesar consulta A
         for row in res_general.rows:
-            page_loc = row.dimension_values[0].value
-            resource_name = row.dimension_values[1].value
-            resource_type = row.dimension_values[2].value
-
-            # Filtrar solo la URL solicitada
-            if normalize(page_loc.lower()) != normalized_search:
+            page = row.dimension_values[0].value
+            if normalize(page.lower()) != normalized_search:
                 continue
 
-            event_count = float(row.metric_values[0].value or 0)
-            total_duration = float(row.metric_values[1].value or 0)
-            total_size = float(row.metric_values[2].value or 0)
-            total_repeat = float(row.metric_values[3].value or 0)
+            name = row.dimension_values[1].value
+            type_ = row.dimension_values[2].value
 
-            if resource_name not in resources:
-                resources[resource_name] = {
-                    "type": resource_type,
+            evt = float(row.metric_values[0].value or 0)
+            dur = float(row.metric_values[1].value or 0)
+            size = float(row.metric_values[2].value or 0)
+            rep = float(row.metric_values[3].value or 0)
+
+            if name not in summary:
+                summary[name] = {
+                    "type": type_,
                     "event_count": 0,
                     "duration_total": 0,
                     "size_total": 0,
                     "repeat_total": 0,
-                    "hourly": {},
-                    "daily": {},
+                    "hourly": {},   # agregados pequeños
+                    "daily": {}
                 }
 
-            r = resources[resource_name]
-            r["event_count"] += event_count
-            r["duration_total"] += total_duration
-            r["size_total"] += total_size
-            r["repeat_total"] += total_repeat
+            r = summary[name]
+            r["event_count"] += evt
+            r["duration_total"] += dur
+            r["size_total"] += size
+            r["repeat_total"] += rep
 
-        # =====================================================================================
+        # ==============================================================
         # 2) CONSULTA B → Promedio por HORA
-        # =====================================================================================
-        query_hour = RunReportRequest(
-            property=f"properties/{property_id}",
-            dimensions=[
-                Dimension(name="customEvent:page_location_loadPage"),
-                Dimension(name="customEvent:resource_name_loadPage"),
-                Dimension(name="hour"),
-            ],
-            metrics=[
-                Metric(name="eventCount"),
-                Metric(name="customEvent:resource_total_duration_loadPage"),
-            ],
-            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-            dimension_filter=query_general.dimension_filter,  # Misma condición del eventName
-            limit=5000
+        # ==============================================================
+        res_hour = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="customEvent:page_location_loadPage"),
+                    Dimension(name="customEvent:resource_name_loadPage"),
+                    Dimension(name="hour"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                    Metric(name="customEvent:resource_total_duration_loadPage"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter=event_filter,
+                limit=5000
+            )
         )
 
-        res_hour = client.run_report(query_hour)
-
+        # Procesar consulta B
         for row in res_hour.rows:
-            page_loc = row.dimension_values[0].value
-            resource_name = row.dimension_values[1].value
+            page = row.dimension_values[0].value
+            if normalize(page.lower()) != normalized_search:
+                continue
+
+            name = row.dimension_values[1].value
             hour = row.dimension_values[2].value
 
-            if normalize(page_loc.lower()) != normalized_search:
+            if name not in summary:
                 continue
 
-            if resource_name not in resources:
-                continue  # Si no existe en general, lo ignoramos
+            evt = float(row.metric_values[0].value or 0)
+            dur = float(row.metric_values[1].value or 0)
 
-            event_count = float(row.metric_values[0].value or 0)
-            duration_total = float(row.metric_values[1].value or 0)
+            if evt > 0:
+                summary[name]["hourly"][hour] = round(dur / evt, 3)
 
-            if event_count > 0:
-                avg = duration_total / event_count
-                resources[resource_name]["hourly"][hour] = round(avg, 3)
-
-        # =====================================================================================
+        # ==============================================================
         # 3) CONSULTA C → Promedio por DÍA
-        # =====================================================================================
-        query_day = RunReportRequest(
-            property=f"properties/{property_id}",
-            dimensions=[
-                Dimension(name="customEvent:page_location_loadPage"),
-                Dimension(name="customEvent:resource_name_loadPage"),
-                Dimension(name="date"),
-            ],
-            metrics=[
-                Metric(name="eventCount"),
-                Metric(name="customEvent:resource_total_duration_loadPage"),
-            ],
-            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-            dimension_filter=query_general.dimension_filter,
-            limit=5000
+        # ==============================================================
+        res_day = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="customEvent:page_location_loadPage"),
+                    Dimension(name="customEvent:resource_name_loadPage"),
+                    Dimension(name="date"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                    Metric(name="customEvent:resource_total_duration_loadPage"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter=event_filter,
+                limit=5000
+            )
         )
 
-        res_day = client.run_report(query_day)
-
         for row in res_day.rows:
-            page_loc = row.dimension_values[0].value
-            resource_name = row.dimension_values[1].value
-            day = row.dimension_values[2].value
-
-            if normalize(page_loc.lower()) != normalized_search:
+            page = row.dimension_values[0].value
+            if normalize(page.lower()) != normalized_search:
                 continue
 
-            if resource_name not in resources:
+            name = row.dimension_values[1].value
+            date = row.dimension_values[2].value
+
+            if name not in summary:
                 continue
 
-            event_count = float(row.metric_values[0].value or 0)
-            duration_total = float(row.metric_values[1].value or 0)
+            evt = float(row.metric_values[0].value or 0)
+            dur = float(row.metric_values[1].value or 0)
 
-            if event_count > 0:
-                avg = duration_total / event_count
-                resources[resource_name]["daily"][day] = round(avg, 3)
+            if evt > 0:
+                summary[name]["daily"][date] = round(dur / evt, 3)
 
-        # =====================================================================================
-        # Construir salida final
-        # =====================================================================================
-        output = []
+        # ==============================================================
+        # Salida ultra-compacta
+        # ==============================================================
+        resources = []
 
-        for name, r in resources.items():
+        for name, r in summary.items():
             if r["event_count"] > 0:
-                avg_duration = r["duration_total"] / r["event_count"]
-                avg_repeat = r["repeat_total"] / r["event_count"]
-                avg_size = r["size_total"] / r["event_count"]
+                duration_avg = r["duration_total"] / r["event_count"]
+                repeat_avg = r["repeat_total"] / r["event_count"]
+                size_avg = r["size_total"] / r["event_count"]
             else:
-                avg_duration = avg_repeat = avg_size = 0
+                duration_avg = repeat_avg = size_avg = 0
 
-            output.append({
+            resources.append({
                 "name": name,
                 "type": r["type"],
-                "duration_avg": round(avg_duration, 3),
-                "repeat_avg": round(avg_repeat, 3),
-                "size_avg": round(avg_size / 1024, 2),
+                "duration_avg": round(duration_avg, 3),
+                "repeat_avg": round(repeat_avg, 3),
+                "size_avg": round(size_avg / 1024, 2),
                 "hourly": r["hourly"],
                 "daily": r["daily"],
             })
 
-        output.sort(key=lambda x: x["duration_avg"], reverse=True)
+        resources.sort(key=lambda x: x["duration_avg"], reverse=True)
 
         return JsonResponse({
             "url": search_url,
-            "resources": output,
-            "total_resources": len(output),
+            "total_resources": len(resources),
+            "resources": resources
         })
 
     except Exception as e:
         import traceback
-        print("ERROR GA4:", traceback.format_exc())
+        print("ERROR:", traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
-    
+  
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
