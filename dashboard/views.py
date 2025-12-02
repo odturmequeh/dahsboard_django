@@ -412,7 +412,6 @@ def ga4_page_resources(request):
         filter_expression = FilterExpression(
             and_group=FilterExpression(
                 expressions=[
-                    # Evento específico
                     FilterExpression(
                         filter=Filter(
                             field_name="eventName",
@@ -421,7 +420,7 @@ def ga4_page_resources(request):
                                 value="resource_performance"
                             )
                         )
-                    ),
+                    )
                 ]
             )
         )
