@@ -407,10 +407,13 @@ def ga4_page_resources(request):
                 return url.split("?")[0].split("#")[0]
 
         normalized_search = normalize_url(search_url.lower())
+        normalized_search_short = normalized_search.replace("https://", "").replace("http://", "")
 
         client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
 
-        # 3. Consultar GA4 con filtro por evento
+        # ⭐⭐⭐ 3. CONSULTA GA4 OPTIMIZADA (tu parte nueva) ⭐⭐⭐
+        from google.analytics.data_v1beta.types import Filter, FilterExpression
+
         response = client.run_report(
             RunReportRequest(
                 property=f"properties/{property_id}",
@@ -420,7 +423,7 @@ def ga4_page_resources(request):
                     Dimension(name="customEvent:resource_name_loadPage"),
                     Dimension(name="customEvent:resource_type_loadPage"),
                     Dimension(name="hour"),
-                    Dimension(name="date"),  # ✅ ACTIVADO
+                    Dimension(name="date"),
                 ],
                 metrics=[
                     Metric(name="eventCount"),
@@ -430,14 +433,43 @@ def ga4_page_resources(request):
                     Metric(name="customEvent:resource_repeat_count_loadPage"),
                 ],
                 date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                limit=50000,  # ✅ Aumentado para pruebas con date dimension
+
+                # 🔥🔥🔥 FILTRO: reduce 95% de rows y evita que Render mate el worker
+                dimension_filter=FilterExpression(
+                    and_group=FilterExpression.AndGroup(
+                        expressions=[
+                            # Solo el evento resource_performance
+                            FilterExpression(
+                                filter=Filter(
+                                    field_name="eventName",
+                                    string_filter=Filter.StringFilter(
+                                        match_type=Filter.StringFilter.MatchType.EXACT,
+                                        value="resource_performance",
+                                    )
+                                )
+                            ),
+                            # Solo URLs que contengan tu URL buscada
+                            FilterExpression(
+                                filter=Filter(
+                                    field_name="customEvent:page_location_loadPage",
+                                    string_filter=Filter.StringFilter(
+                                        match_type=Filter.StringFilter.MatchType.PARTIAL,
+                                        value=normalized_search_short,
+                                    )
+                                )
+                            ),
+                        ]
+                    )
+                ),
+
+                limit=10000,  # Ya no hace falta 50k
             )
         )
 
         # 4. Procesar datos - Filtrar por evento resource_performance
         grouped = {}
         filtered_count = 0
-        total_rows = len(response.rows)  # ✅ Contar filas totales
+        total_rows = len(response.rows)
 
         for row in response.rows:
             try:
@@ -447,35 +479,31 @@ def ga4_page_resources(request):
                 resource_type = row.dimension_values[3].value
                 hour = row.dimension_values[4].value
                 day = row.dimension_values[5].value
-                
+
                 event_count = float(row.metric_values[0].value or 0)
                 page_duration = float(row.metric_values[1].value or 0)
                 resource_duration = float(row.metric_values[2].value or 0)
                 transfer_size = float(row.metric_values[3].value or 0)
                 resource_repeat = float(row.metric_values[4].value or 0)
 
-            except (ValueError, IndexError) as e:
+            except (ValueError, IndexError):
                 continue
 
-            # FILTRO CRÍTICO: Solo eventos resource_performance
             if event_name != "resource_performance":
                 continue
 
-            # Normalizar y filtrar por URL
             normalized_page = normalize_url(page_path.lower())
-            
             if normalized_page != normalized_search:
                 continue
+
             filtered_count += 1
 
-            # Extraer hostname del recurso
             try:
                 parsed_resource = urlparse(resource_name)
                 resource_host = parsed_resource.netloc if parsed_resource.netloc else resource_name
             except:
                 resource_host = resource_name
 
-            # Determinar si es externo o interno
             try:
                 parsed_page = urlparse(page_path)
                 page_host = parsed_page.netloc
@@ -483,7 +511,6 @@ def ga4_page_resources(request):
             except:
                 is_external = False
 
-            # Clave de agrupación
             key = resource_host if is_external else resource_name
 
             if key not in grouped:
@@ -495,7 +522,7 @@ def ga4_page_resources(request):
                     "total_repeat": 0,
                     "total_size": 0,
                     "hourly": {},
-                    "daily": {}  # ✅ INICIALIZADO CORRECTAMENTE
+                    "daily": {}
                 }
 
             grouped[key]["event_count"] += event_count
@@ -503,27 +530,18 @@ def ga4_page_resources(request):
             grouped[key]["total_repeat"] += resource_repeat
             grouped[key]["total_size"] += transfer_size
 
-            # ⭐️ GUARDAR POR HORA
             if hour not in grouped[key]["hourly"]:
-                grouped[key]["hourly"][hour] = {
-                    "event_count": 0,
-                    "duration_total": 0
-                }
+                grouped[key]["hourly"][hour] = {"event_count": 0, "duration_total": 0}
 
             grouped[key]["hourly"][hour]["event_count"] += event_count
             grouped[key]["hourly"][hour]["duration_total"] += resource_duration
 
-            # ⭐️ GUARDAR POR DÍA (CORREGIDO)
-            if day not in grouped[key]["daily"]:  # ✅ CORRECCIÓN: grouped[key]["daily"]
-                grouped[key]["daily"][day] = {
-                    "event_count": 0,
-                    "duration_total": 0
-                }
+            if day not in grouped[key]["daily"]:
+                grouped[key]["daily"][day] = {"event_count": 0, "duration_total": 0}
 
             grouped[key]["daily"][day]["event_count"] += event_count
             grouped[key]["daily"][day]["duration_total"] += resource_duration
 
-        # 5. Calcular promedios usando event_count
         if filtered_count == 0:
             return JsonResponse({
                 "url": search_url,
@@ -533,7 +551,6 @@ def ga4_page_resources(request):
 
         resources = []
         for name, data in grouped.items():
-            # CLAVE: Dividir entre event_count (cantidad real de eventos disparados)
             if data["event_count"] > 0:
                 avg_duration = data["total_duration"] / data["event_count"]
                 avg_repeat = data["total_repeat"] / data["event_count"]
@@ -541,16 +558,12 @@ def ga4_page_resources(request):
             else:
                 avg_duration = avg_repeat = avg_size = 0
 
-            # ⭐️ Calcular promedio por HORA
             hourly_avg = {
-                hour: round(
-                    bucket["duration_total"] / bucket["event_count"], 3
-                )
+                hour: round(bucket["duration_total"] / bucket["event_count"], 3)
                 for hour, bucket in data["hourly"].items()
-                if bucket["event_count"] > 0  # ✅ Añadido para evitar división por cero
+                if bucket["event_count"] > 0
             }
 
-            # ⭐️ Calcular promedio por DÍA (CORREGIDO)
             daily_avg = {
                 d: round(v["duration_total"] / v["event_count"], 3)
                 for d, v in data["daily"].items()
@@ -564,10 +577,9 @@ def ga4_page_resources(request):
                 "repeat_avg": round(avg_repeat, 2),
                 "size_avg": round(avg_size / 1024, 2) if avg_size > 0 else 0,
                 "hourly": hourly_avg,
-                "daily": daily_avg,  # ✅ INCLUIDO EN RESPUESTA
+                "daily": daily_avg,
             })
 
-        # Ordenar por duración descendente
         resources.sort(key=lambda x: x["duration_avg"], reverse=True)
 
         return JsonResponse({
@@ -581,7 +593,7 @@ def ga4_page_resources(request):
         import traceback
         print(f"Error en GA4 Page Resources: {traceback.format_exc()}")
         return JsonResponse({"error": str(e)}, status=500)
-    
+ 
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
