@@ -370,218 +370,139 @@ def ga4_funnel_data(request):
 
 
 def ga4_page_resources(request):
-    """
-    Obtiene recursos cargados para una página específica.
-    Agrupa por dominio externo o nombre de recurso.
-    """
     try:
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         property_id = os.getenv("GA4_PROPERTY_ID")
 
         if not credentials_path or not property_id:
-            return JsonResponse({"error": "Credenciales o property ID no definidas"}, status=500)
+            return JsonResponse({"error": "Credenciales no definidas"}, status=500)
 
-        # 1. Obtener parámetros
         search_url = request.GET.get("url")
         if not search_url:
             return JsonResponse({"error": "Parámetro 'url' requerido"}, status=400)
 
         start_date = request.GET.get("start")
         end_date = request.GET.get("end")
+
         if not start_date or not end_date:
             end_date_obj = datetime.today()
             start_date_obj = end_date_obj - timedelta(days=28)
             start_date = start_date_obj.strftime("%Y-%m-%d")
             end_date = end_date_obj.strftime("%Y-%m-%d")
 
-        # 2. Normalizar URL de búsqueda
-        def normalize_url(url):
-            """Normaliza una URL para comparación"""
+        # Normalización simple (rápida)
+        def normalize(u):
             try:
-                if not url.startswith("http"):
-                    url = "https://" + url
-                parsed = urlparse(url)
-                normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
-                return normalized
+                if not u.startswith("http"):
+                    u = "https://" + u
+                p = urlparse(u)
+                return p.scheme + "://" + p.netloc + p.path.rstrip("/")
             except:
-                return url.split("?")[0].split("#")[0]
+                return u
 
-        normalized_search = normalize_url(search_url.lower())
+        normalized_search = normalize(search_url.lower())
 
         client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
 
-        # 3. Consultar GA4 con filtro por evento
-        response = client.run_report(
-            RunReportRequest(
-                property=f"properties/{property_id}",
-                dimensions=[
-                    Dimension(name="eventName"),
-                    Dimension(name="customEvent:page_location_loadPage"),
-                    Dimension(name="customEvent:resource_name_loadPage"),
-                    Dimension(name="customEvent:resource_type_loadPage"),
-                    Dimension(name="hour"),
-                    Dimension(name="date"),  # ✅ ACTIVADO
-                ],
-                metrics=[
-                    Metric(name="eventCount"),
-                    Metric(name="customEvent:total_duration_loadPage"),
-                    Metric(name="customEvent:resource_total_duration_loadPage"),
-                    Metric(name="customEvent:resource_total_size_loadPage"),
-                    Metric(name="customEvent:resource_repeat_count_loadPage"),
-                ],
-                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
-                limit=50000,  # ✅ Aumentado para pruebas con date dimension
+        # 🔥 FILTRO DIRECTO EN GA4 → drena 90% del uso de RAM
+        request_ga4 = RunReportRequest(
+            property=f"properties/{property_id}",
+            dimensions=[
+                Dimension(name="eventName"),
+                Dimension(name="customEvent:resource_name_loadPage"),
+                Dimension(name="customEvent:resource_type_loadPage"),
+                Dimension(name="hour"),
+                Dimension(name="date"),
+            ],
+            metrics=[
+                Metric(name="eventCount"),
+                Metric(name="customEvent:resource_total_duration_loadPage"),
+                Metric(name="customEvent:resource_total_size_loadPage"),
+                Metric(name="customEvent:resource_repeat_count_loadPage"),
+            ],
+            date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+            limit=8000,  # ⚠️ suficiente, evita matar Render
+            dimension_filter=FilterExpression(
+                filter=Filter(
+                    field_name="customEvent:page_location_loadPage",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.EXACT,
+                        value=normalized_search
+                    )
+                )
             )
         )
 
-        # 4. Procesar datos - Filtrar por evento resource_performance
+        response = client.run_report(request_ga4)
+
         grouped = {}
-        filtered_count = 0
-        total_rows = len(response.rows)  # ✅ Contar filas totales
 
         for row in response.rows:
-            try:
-                event_name = row.dimension_values[0].value
-                page_path = row.dimension_values[1].value
-                resource_name = row.dimension_values[2].value
-                resource_type = row.dimension_values[3].value
-                hour = row.dimension_values[4].value
-                day = row.dimension_values[5].value
-                
-                event_count = float(row.metric_values[0].value or 0)
-                page_duration = float(row.metric_values[1].value or 0)
-                resource_duration = float(row.metric_values[2].value or 0)
-                transfer_size = float(row.metric_values[3].value or 0)
-                resource_repeat = float(row.metric_values[4].value or 0)
-
-            except (ValueError, IndexError) as e:
-                continue
-
-            # FILTRO CRÍTICO: Solo eventos resource_performance
+            event_name = row.dimension_values[0].value
             if event_name != "resource_performance":
                 continue
 
-            # Normalizar y filtrar por URL
-            normalized_page = normalize_url(page_path.lower())
-            
-            if normalized_page != normalized_search:
-                continue
-            filtered_count += 1
+            resource_name = row.dimension_values[1].value
+            resource_type = row.dimension_values[2].value
+            hour = row.dimension_values[3].value
+            day = row.dimension_values[4].value
 
-            # Extraer hostname del recurso
-            try:
-                parsed_resource = urlparse(resource_name)
-                resource_host = parsed_resource.netloc if parsed_resource.netloc else resource_name
-            except:
-                resource_host = resource_name
+            event_count = float(row.metric_values[0].value or 0)
+            resource_duration = float(row.metric_values[1].value or 0)
+            size = float(row.metric_values[2].value or 0)
+            repeat = float(row.metric_values[3].value or 0)
 
-            # Determinar si es externo o interno
-            try:
-                parsed_page = urlparse(page_path)
-                page_host = parsed_page.netloc
-                is_external = resource_host and page_host not in resource_host and resource_host != page_host
-            except:
-                is_external = False
-
-            # Clave de agrupación
-            key = resource_host if is_external else resource_name
-
-            if key not in grouped:
-                grouped[key] = {
-                    "host": resource_host,
+            if resource_name not in grouped:
+                grouped[resource_name] = {
                     "type": resource_type,
-                    "event_count": 0,
-                    "total_duration": 0,
-                    "total_repeat": 0,
-                    "total_size": 0,
+                    "events": 0,
+                    "duration": 0,
+                    "repeat": 0,
+                    "size": 0,
                     "hourly": {},
-                    "daily": {}  # ✅ INICIALIZADO CORRECTAMENTE
+                    "daily": {}
                 }
 
-            grouped[key]["event_count"] += event_count
-            grouped[key]["total_duration"] += resource_duration
-            grouped[key]["total_repeat"] += resource_repeat
-            grouped[key]["total_size"] += transfer_size
+            item = grouped[resource_name]
+            item["events"] += event_count
+            item["duration"] += resource_duration
+            item["repeat"] += repeat
+            item["size"] += size
 
-            # ⭐️ GUARDAR POR HORA
-            if hour not in grouped[key]["hourly"]:
-                grouped[key]["hourly"][hour] = {
-                    "event_count": 0,
-                    "duration_total": 0
-                }
+            item["hourly"].setdefault(hour, {"ev": 0, "dur": 0})
+            item["hourly"][hour]["ev"] += event_count
+            item["hourly"][hour]["dur"] += resource_duration
 
-            grouped[key]["hourly"][hour]["event_count"] += event_count
-            grouped[key]["hourly"][hour]["duration_total"] += resource_duration
+            item["daily"].setdefault(day, {"ev": 0, "dur": 0})
+            item["daily"][day]["ev"] += event_count
+            item["daily"][day]["dur"] += resource_duration
 
-            # ⭐️ GUARDAR POR DÍA (CORREGIDO)
-            if day not in grouped[key]["daily"]:  # ✅ CORRECCIÓN: grouped[key]["daily"]
-                grouped[key]["daily"][day] = {
-                    "event_count": 0,
-                    "duration_total": 0
-                }
+        # Convertir resultado
+        result_list = []
+        for name, d in grouped.items():
+            ev = d["events"] or 1
 
-            grouped[key]["daily"][day]["event_count"] += event_count
-            grouped[key]["daily"][day]["duration_total"] += resource_duration
-
-        # 5. Calcular promedios usando event_count
-        if filtered_count == 0:
-            return JsonResponse({
-                "url": search_url,
-                "total_resources": 0,
-                "resources": []
-            })
-
-        resources = []
-        for name, data in grouped.items():
-            # CLAVE: Dividir entre event_count (cantidad real de eventos disparados)
-            if data["event_count"] > 0:
-                avg_duration = data["total_duration"] / data["event_count"]
-                avg_repeat = data["total_repeat"] / data["event_count"]
-                avg_size = data["total_size"] / data["event_count"]
-            else:
-                avg_duration = avg_repeat = avg_size = 0
-
-            # ⭐️ Calcular promedio por HORA
-            hourly_avg = {
-                hour: round(
-                    bucket["duration_total"] / bucket["event_count"], 3
-                )
-                for hour, bucket in data["hourly"].items()
-                if bucket["event_count"] > 0  # ✅ Añadido para evitar división por cero
-            }
-
-            # ⭐️ Calcular promedio por DÍA (CORREGIDO)
-            daily_avg = {
-                d: round(v["duration_total"] / v["event_count"], 3)
-                for d, v in data["daily"].items()
-                if v["event_count"] > 0
-            }
-
-            resources.append({
+            result_list.append({
                 "name": name,
-                "type": data["type"],
-                "duration_avg": round(avg_duration, 3),
-                "repeat_avg": round(avg_repeat, 2),
-                "size_avg": round(avg_size / 1024, 2) if avg_size > 0 else 0,
-                "hourly": hourly_avg,
-                "daily": daily_avg,  # ✅ INCLUIDO EN RESPUESTA
+                "type": d["type"],
+                "duration_avg": d["duration"] / ev,
+                "repeat_avg": d["repeat"] / ev,
+                "size_avg": d["size"] / ev,
+                "hourly": {h: round(v["dur"] / v["ev"], 3) for h, v in d["hourly"].items()},
+                "daily": {dy: round(v["dur"] / v["ev"], 3) for dy, v in d["daily"].items()},
             })
 
-        # Ordenar por duración descendente
-        resources.sort(key=lambda x: x["duration_avg"], reverse=True)
+        result_list.sort(key=lambda x: x["duration_avg"], reverse=True)
 
         return JsonResponse({
             "url": search_url,
-            "total_resources": len(resources),
-            "filtered_rows": filtered_count,
-            "resources": resources,
+            "total_resources": len(result_list),
+            "resources": result_list
         })
 
     except Exception as e:
-        import traceback
-        print(f"Error en GA4 Page Resources: {traceback.format_exc()}")
         return JsonResponse({"error": str(e)}, status=500)
-    
+ 
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
