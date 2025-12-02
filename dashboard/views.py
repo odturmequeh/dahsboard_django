@@ -431,8 +431,16 @@ def ga4_page_resources(request):
                 ],
                 date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
                 
-                
-                limit=50000,  # ✅ Aumentado para pruebas con date dimension
+                dimension_filter=FilterExpression(
+                filter=Filter(
+                    field_name="eventName",
+                    string_filter=Filter.StringFilter(
+                        match_type=Filter.StringFilter.MatchType.EXACT,
+                        value="resource_performance"
+                    )
+                )
+            ),
+                limit=15000,  # ✅ Aumentado para pruebas con date dimension
             )
         )
 
