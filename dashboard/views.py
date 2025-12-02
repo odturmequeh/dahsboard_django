@@ -376,14 +376,9 @@ def ga4_page_resources(request):
     - No acumula estructuras de gran tamaño
     - 3 consultas separadas
     - Solo guarda lo estrictamente necesario
+    - LIMITA LA RESPUESTA A LOS 100 RECURSOS MAS LENTOS
     """
     try:
-        import os
-        from google.analytics.data_v1beta import BetaAnalyticsDataClient
-        from google.analytics.data_v1beta.types import RunReportRequest, FilterExpression, Filter, DateRange, Dimension, Metric
-        from urllib.parse import urlparse
-        from datetime import datetime, timedelta
-        from django.http import JsonResponse
 
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         property_id = os.getenv("GA4_PROPERTY_ID")
@@ -391,9 +386,9 @@ def ga4_page_resources(request):
         if not credentials_path or not property_id:
             return JsonResponse({"error": "Credenciales o Property ID faltantes"}, status=500)
 
-        # -------------------------------------------------------------
+        # -------------------------
         # Parámetros
-        # -------------------------------------------------------------
+        # -------------------------
         search_url = request.GET.get("url")
         if not search_url:
             return JsonResponse({"error": "Parámetro ?url requerido"}, status=400)
@@ -407,9 +402,9 @@ def ga4_page_resources(request):
             start_date = start_date_obj.strftime("%Y-%m-%d")
             end_date = end_date_obj.strftime("%Y-%m-%d")
 
-        # -------------------------------------------------------------
-        # Normalizar URL una sola vez
-        # -------------------------------------------------------------
+        # -------------------------
+        # Normalizar URL
+        # -------------------------
         def normalize(url):
             try:
                 if not url.startswith("http"):
@@ -457,8 +452,7 @@ def ga4_page_resources(request):
             )
         )
 
-        # Estructura minimizada
-        summary = {}  # solo { resource_name: {small counters} }
+        summary = {}
 
         # Procesar consulta A
         for row in res_general.rows:
@@ -481,7 +475,7 @@ def ga4_page_resources(request):
                     "duration_total": 0,
                     "size_total": 0,
                     "repeat_total": 0,
-                    "hourly": {},   # agregados pequeños
+                    "hourly": {},
                     "daily": {}
                 }
 
@@ -492,7 +486,7 @@ def ga4_page_resources(request):
             r["repeat_total"] += rep
 
         # ==============================================================
-        # 2) CONSULTA B → Promedio por HORA
+        # 2) CONSULTA B → Promedio por hora
         # ==============================================================
         res_hour = client.run_report(
             RunReportRequest(
@@ -512,7 +506,6 @@ def ga4_page_resources(request):
             )
         )
 
-        # Procesar consulta B
         for row in res_hour.rows:
             page = row.dimension_values[0].value
             if normalize(page.lower()) != normalized_search:
@@ -531,7 +524,7 @@ def ga4_page_resources(request):
                 summary[name]["hourly"][hour] = round(dur / evt, 3)
 
         # ==============================================================
-        # 3) CONSULTA C → Promedio por DÍA
+        # 3) CONSULTA C → Promedio por día
         # ==============================================================
         res_day = client.run_report(
             RunReportRequest(
@@ -569,7 +562,7 @@ def ga4_page_resources(request):
                 summary[name]["daily"][date] = round(dur / evt, 3)
 
         # ==============================================================
-        # Salida ultra-compacta
+        # SALIDA → SOLO LOS 100 MÁS LENTOS
         # ==============================================================
         resources = []
 
@@ -591,7 +584,11 @@ def ga4_page_resources(request):
                 "daily": r["daily"],
             })
 
+        # Ordenar por duración
         resources.sort(key=lambda x: x["duration_avg"], reverse=True)
+
+        # <<< SOLO 100 REGISTROS >>>
+        resources = resources[:100]
 
         return JsonResponse({
             "url": search_url,
@@ -603,7 +600,7 @@ def ga4_page_resources(request):
         import traceback
         print("ERROR:", traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
-  
+ 
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
