@@ -17,9 +17,51 @@ export default function PageResources({ startDate, endDate }) {
   const [error, setError] = useState(null);
   const [visibleRows, setVisibleRows] = useState(5);
   const [selectedResource, setSelectedResource] = useState(null);
+  // Fechas internas del módulo
+  const today = new Date().toISOString().split("T")[0];
+  const past30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .split("T")[0];
+
+  const [localStart, setLocalStart] = useState(past30);
+  const [localEnd, setLocalEnd] = useState(today);
+
+
+  function enforceMaxRange(start, end) {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+
+    const diff = (endDate - startDate) / (1000 * 60 * 60 * 24);
+
+    if (diff > 15) {
+      // Si excede, mover start para que quede EXACTO 15 días
+      const newStart = new Date(
+        endDate.getTime() - 15 * 24 * 60 * 60 * 1000
+      )
+        .toISOString()
+        .split("T")[0];
+
+      return { start: newStart, end };
+    }
+
+    return { start, end };
+  }
+
+  // 🔥 Nueva: autocorregir fechas cuando cambien
+  React.useEffect(() => {
+    const corrected = enforceMaxRange(localStart, localEnd);
+
+    if (corrected.start !== localStart) setLocalStart(corrected.start);
+    if (corrected.end !== localEnd) setLocalEnd(corrected.end);
+
+    if (selectedResource) setSelectedResource(null);
+  }, [localStart, localEnd]);
 
   const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard/resources";
-
+    // Si cambian las fechas, cerrar modal
+  React.useEffect(() => {
+    if (selectedResource) setSelectedResource(null);
+  }, [localStart, localEnd]);
   /** ===============================
    *  🔍 BUSCAR RECURSOS
    *  GET /resources/general/
@@ -38,7 +80,7 @@ export default function PageResources({ startDate, endDate }) {
 
     try {
       const response = await fetch(
-        `${API_BASE_URL}/general/?url=${encodeURIComponent(trimmedUrl)}&start=${startDate}&end=${endDate}`
+        `${API_BASE_URL}/general/?url=${encodeURIComponent(trimmedUrl)}&start=${localStart}&end=${localEnd}`
       );
 
       if (!response.ok) throw new Error(`Error ${response.status}`);
@@ -74,12 +116,12 @@ export default function PageResources({ startDate, endDate }) {
         fetch(
           `${API_BASE_URL}/daily/?resources=${encodeURIComponent(resource.name)}&url=${encodeURIComponent(
             searchUrl
-          )}&start=${startDate}&end=${endDate}`
+          )}&start=${localStart}&end=${localEnd}`
         ),
         fetch(
           `${API_BASE_URL}/hourly/?resources=${encodeURIComponent(resource.name)}&url=${encodeURIComponent(
             searchUrl
-          )}&start=${startDate}&end=${endDate}`
+          )}&start=${localStart}&end=${localEnd}`
         ),
       ]);
 
@@ -149,6 +191,44 @@ export default function PageResources({ startDate, endDate }) {
       <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">
         🔍 Recursos por Página
       </h2>
+
+{/* Selectores de fecha internos del módulo */}
+<div className="flex flex-col sm:flex-row gap-3 mb-4 justify-center">
+  <div className="flex flex-col">
+    <label className="text-sm font-semibold text-gray-600">Desde:</label>
+    <input
+      type="date"
+      value={localStart}
+      max={localEnd}
+      min={new Date(
+        new Date(localEnd).getTime() - 15 * 24 * 60 * 60 * 1000
+      )
+        .toISOString()
+        .split("T")[0]}
+      onChange={(e) => setLocalStart(e.target.value)}
+      className="px-3 py-2 border border-gray-300 rounded-lg"
+    />
+  </div>
+
+  <div className="flex flex-col">
+    <label className="text-sm font-semibold text-gray-600">Hasta:</label>
+    <input
+      type="date"
+      value={localEnd}
+      min={localStart}
+      max={new Date(
+        new Date(localStart).getTime() + 15 * 24 * 60 * 60 * 1000
+      )
+        .toISOString()
+        .split("T")[0]}
+      onChange={(e) => setLocalEnd(e.target.value)}
+      className="px-3 py-2 border border-gray-300 rounded-lg"
+    />
+  </div>
+</div>
+
+
+
 
       {/* Buscador */}
       <div className="flex flex-col sm:flex-row gap-3 mb-6 items-center justify-center">
