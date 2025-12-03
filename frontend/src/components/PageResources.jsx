@@ -270,7 +270,7 @@ export default function PageResources({ startDate, endDate }) {
                 <tr className="bg-gray-200">
                   <th className="p-3 text-left">Recurso</th>
                   <th className="p-3 text-left">Tipo</th>
-                  <th className="p-3 text-center">Duración (ms)</th>
+                  <th className="p-3 text-center">Duración (s)</th>
                   <th className="p-3 text-center">Repetición</th>
                   {/* <th className="p-3 text-center">Tamaño (KB)</th> */}
                 </tr>
