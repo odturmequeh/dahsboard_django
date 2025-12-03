@@ -369,7 +369,10 @@ def ga4_funnel_data(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 
-def ga4_page_resources(request):
+
+#----------------------------------
+
+'''def ga4_page_resources(request):
     """
     Optimizado para entornos de muy baja RAM como Render:
     - No usa diccionarios anidados
@@ -600,7 +603,757 @@ def ga4_page_resources(request):
         import traceback
         print("ERROR:", traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
- 
+'''
+
+#-----------------------------------
+
+
+
+# ============================================================
+# FUNCIONES AUXILIARES COMPARTIDAS
+# ============================================================
+
+def _get_ga4_client():
+    """Retorna cliente de GA4"""
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if not credentials_path:
+        raise ValueError("GOOGLE_APPLICATION_CREDENTIALS no configurado")
+    return BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+
+def _get_property_id():
+    """Retorna property ID"""
+    property_id = os.getenv("GA4_PROPERTY_ID")
+    if not property_id:
+        raise ValueError("GA4_PROPERTY_ID no configurado")
+    return property_id
+
+
+def _normalize_url(url):
+    """Normaliza URL para comparación"""
+    try:
+        if not url.startswith("http"):
+            url = "https://" + url
+        p = urlparse(url)
+        return f"{p.scheme}://{p.netloc}{p.path.rstrip('/')}"
+    except:
+        return url.split("?")[0]
+
+
+def _get_date_range(start_date, end_date):
+    """Retorna rango de fechas"""
+    if not start_date or not end_date:
+        end_date_obj = datetime.today()
+        start_date_obj = end_date_obj - timedelta(days=28)
+        start_date = start_date_obj.strftime("%Y-%m-%d")
+        end_date = end_date_obj.strftime("%Y-%m-%d")
+    return start_date, end_date
+
+
+def _get_event_filter():
+    """Retorna filtro común para resource_performance"""
+    return FilterExpression(
+        filter=Filter(
+            field_name="eventName",
+            string_filter=Filter.StringFilter(
+                match_type=Filter.StringFilter.MatchType.EXACT,
+                value="resource_performance"
+            )
+        )
+    )
+
+def _get_resource_key(resource_name, page_path, resource_type):
+    """Determina la clave de agrupación (host externo o nombre completo)"""
+    try:
+        parsed_resource = urlparse(resource_name)
+        resource_host = parsed_resource.netloc if parsed_resource.netloc else resource_name
+    except:
+        resource_host = resource_name
+
+    # Determinar si es externo
+    try:
+        parsed_page = urlparse(page_path)
+        page_host = parsed_page.netloc
+        is_external = resource_host and page_host not in resource_host and resource_host != page_host
+    except:
+        is_external = False
+
+    # Retornar host si es externo, nombre completo si es interno
+    return resource_host if is_external else resource_name
+
+# ============================================================
+# ENDPOINT 1: DATOS GENERALES (TOP 50 RECURSOS)
+# ============================================================
+
+'''def ga4_resources_general(request):
+    """
+    Retorna datos generales de los 50 recursos más lentos
+    Parámetros: ?url=... &start=YYYY-MM-DD &end=YYYY-MM-DD
+    """
+    import gc
+    
+    try:
+        # Validar parámetros
+        search_url = request.GET.get("url")
+        if not search_url:
+            return JsonResponse({"error": "Parámetro ?url requerido"}, status=400)
+
+        start_date = request.GET.get("start")
+        end_date = request.GET.get("end")
+        start_date, end_date = _get_date_range(start_date, end_date)
+
+        # Configurar cliente
+        client = _get_ga4_client()
+        property_id = _get_property_id()
+        normalized_search = _normalize_url(search_url.lower())
+
+        # Consulta GA4
+        response = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="customEvent:page_location_loadPage"),
+                    Dimension(name="customEvent:resource_name_loadPage"),
+                    Dimension(name="customEvent:resource_type_loadPage"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                    Metric(name="customEvent:total_duration_loadPage"),
+                    Metric(name="customEvent:resource_total_size_loadPage"),
+                    Metric(name="customEvent:resource_repeat_count_loadPage"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                dimension_filter=_get_event_filter(),
+                limit=1000
+            )
+        )
+
+        # DEBUG: Imprimir primeros 5 registros
+        print("\n" + "="*80)
+        print("DEBUG: PRIMEROS 5 REGISTROS DE GA4")
+        print("="*80)
+        
+        count = 0
+        for row in response.rows:
+            if count >= 10:
+                break
+                
+            page = row.dimension_values[0].value
+            name = row.dimension_values[1].value
+            type_ = row.dimension_values[2].value
+            
+            evt = row.metric_values[0].value
+            dur = row.metric_values[1].value
+            size = row.metric_values[2].value
+            rep = row.metric_values[3].value
+            
+            print(f"\n--- Registro {count + 1} ---")
+            print(f"Page: {page}")
+            print(f"Resource Name: {name}")
+            print(f"Resource Type: {type_}")
+            print(f"Event Count (raw): {evt}")
+            print(f"Total Duration (raw): {dur}")
+            print(f"Total Size (raw): {size}")
+            print(f"Repeat Count (raw): {rep}")
+            
+            count += 1
+        
+        print("\n" + "="*80 + "\n")
+
+        # Procesar datos
+        summary = {}
+
+        for row in response.rows:
+            page = row.dimension_values[0].value
+            if _normalize_url(page.lower()) != normalized_search:
+                continue
+
+            name = row.dimension_values[1].value
+            type_ = row.dimension_values[2].value
+
+            evt = float(row.metric_values[0].value or 0)
+            dur = float(row.metric_values[1].value or 0)
+            size = float(row.metric_values[2].value or 0)
+            rep = float(row.metric_values[3].value or 0)
+
+            if name not in summary:
+                summary[name] = {
+                    "type": type_,
+                    "event_count": 0,
+                    "duration_sum": 0,
+                    "size_sum": 0,
+                    "repeat_sum": 0,
+                    "observations": 0,
+                }
+
+            r = summary[name]
+            r["event_count"] += evt
+            r["duration_sum"] += dur
+            r["size_sum"] += size
+            r["repeat_sum"] += rep
+            r["observations"] += 1
+
+        # DEBUG: Imprimir primeros 5 recursos agregados
+        print("\n" + "="*80)
+        print("DEBUG: PRIMEROS 5 RECURSOS AGREGADOS")
+        print("="*80)
+        
+        count = 0
+        for name, r in list(summary.items())[:10]:
+            print(f"\n--- Recurso {count + 1} ---")
+            print(f"Name: {name}")
+            print(f"Type: {r['type']}")
+            print(f"Event Count (suma): {r['event_count']}")
+            print(f"Duration Sum: {r['duration_sum']}")
+            print(f"Size Sum: {r['size_sum']}")
+            print(f"Repeat Sum: {r['repeat_sum']}")
+            print(f"Observations: {r['observations']}")
+            
+            if r['event_count'] > 0 and r['observations'] > 0:
+                print(f"\nCálculo actual:")
+                print(f"  duration_sum / event_count / observations = {r['duration_sum']} / {r['event_count']} / {r['observations']} = {r['duration_sum']/r['event_count']/r['observations']}")
+                print(f"  duration_sum / observations = {r['duration_sum']} / {r['observations']} = {r['duration_sum']/r['observations']}")
+                print(f"  duration_sum / event_count = {r['duration_sum']} / {r['event_count']} = {r['duration_sum']/r['event_count']}")
+                print(f"  duration_sum / repeat_sum = {r['duration_sum']} / {r['repeat_sum']} = {r['duration_sum']/r['repeat_sum']}")
+            
+            count += 1
+        
+        print("\n" + "="*80 + "\n")
+
+
+
+        if "9949-6cf1cee076fb3739.js" in name:
+            print("\n" + "="*80)
+            print(f"DEBUG RECURSO 9949:")
+            print(f"Name: {name}")
+            print(f"event_count: {r['event_count']}")
+            print(f"duration_sum: {r['duration_sum']}")
+            print(f"repeat_sum: {r['repeat_sum']}")
+            print(f"observations: {r['observations']}")
+            print(f"Cálculo: {r['duration_sum']} / {r['repeat_sum']} = {r['duration_sum'] / r['repeat_sum']}")
+            print("="*80 + "\n")
+        # Calcular promedios y ordenar
+        resources = []
+        for name, r in summary.items():
+            event_count = r["event_count"]
+            obs = r["observations"]
+            repeat_sum = r["repeat_sum"]
+            
+            if event_count > 0 and obs > 0 and repeat_sum > 0:
+                # FÓRMULA CORRECTA: dividir por repeat_sum
+                duration_avg = r["duration_sum"] / repeat_sum
+                size_avg = r["size_sum"] / repeat_sum
+                repeat_avg = repeat_sum / event_count
+
+                resources.append({
+                    "name": name,
+                    "type": r["type"],
+                    "duration_avg": round(duration_avg, 3),
+                    "repeat_avg": round(repeat_avg, 3),
+                    "size_avg": round(size_avg / 1024, 2),
+                    "event_count": int(event_count),
+                    "observations": obs,
+                })
+
+        # TOP 50 más lentos
+        resources.sort(key=lambda x: x["duration_avg"], reverse=True)
+        resources = resources[:50]
+
+        # ========================================
+        # DEBUG: DATOS ENVIADOS AL FRONTEND
+        # ========================================
+        print("\n" + "="*80)
+        print("DEBUG: PRIMEROS 5 RECURSOS ENVIADOS AL FRONTEND")
+        print("="*80)
+        
+        for i, resource in enumerate(resources[:5]):
+            print(f"\n--- Recurso {i+1} enviado al front ---")
+            print(f"Name: {resource['name']}")
+            print(f"Type: {resource['type']}")
+            print(f"duration_avg: {resource['duration_avg']} ms")
+            print(f"repeat_avg: {resource['repeat_avg']}")
+            print(f"size_avg: {resource['size_avg']} KB")
+            print(f"event_count: {resource['event_count']}")
+            print(f"observations: {resource['observations']}")
+        
+        print("\n" + "="*80 + "\n")
+
+        del response, summary
+        gc.collect()
+
+        json_response = {
+            "url": search_url,
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_resources": len(resources),
+            "resources": resources
+        }
+
+        return JsonResponse(json_response)
+
+    except Exception as e:
+        import traceback
+        print("ERROR:", traceback.format_exc())
+        gc.collect()
+        return JsonResponse({"error": str(e)}, status=500)
+'''
+
+
+def ga4_resources_general(request):
+    """
+    Obtiene recursos cargados para una página específica.
+    Agrupa por dominio externo o nombre de recurso.
+    """
+    try:
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        property_id = os.getenv("GA4_PROPERTY_ID")
+
+        if not credentials_path or not property_id:
+            return JsonResponse({"error": "Credenciales o property ID no definidas"}, status=500)
+
+        # 1. Obtener parámetros
+        search_url = request.GET.get("url")
+        if not search_url:
+            return JsonResponse({"error": "Parámetro 'url' requerido"}, status=400)
+
+        start_date = request.GET.get("start")
+        end_date = request.GET.get("end")
+        if not start_date or not end_date:
+            end_date_obj = datetime.today()
+            start_date_obj = end_date_obj - timedelta(days=28)
+            start_date = start_date_obj.strftime("%Y-%m-%d")
+            end_date = end_date_obj.strftime("%Y-%m-%d")
+
+        # 2. Normalizar URL de búsqueda
+        def normalize_url(url):
+            """Normaliza una URL para comparación"""
+            try:
+                if not url.startswith("http"):
+                    url = "https://" + url
+                parsed = urlparse(url)
+                normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+                return normalized
+            except:
+                return url.split("?")[0].split("#")[0]
+
+        normalized_search = normalize_url(search_url.lower())
+
+        client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+        # 3. Consultar GA4 con filtro por evento
+        response = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="eventName"),  # ← AGREGAR: Para filtrar por evento
+                    Dimension(name="customEvent:page_location_loadPage"),
+                    Dimension(name="customEvent:resource_name_loadPage"),
+                    Dimension(name="customEvent:resource_type_loadPage"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),  # ← CRÍTICO: Necesario para promediar
+                    Metric(name="customEvent:total_duration_loadPage"),
+                    Metric(name="customEvent:resource_total_duration_loadPage"),
+                    Metric(name="customEvent:resource_total_size_loadPage"),
+                    Metric(name="customEvent:resource_repeat_count_loadPage"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                limit=10000,
+            )
+        )
+
+        # 4. Procesar datos - Filtrar por evento resource_performance
+        grouped = {}
+        filtered_count = 0
+
+        for row in response.rows:
+            try:
+                event_name = row.dimension_values[0].value
+                page_path = row.dimension_values[1].value
+                resource_name = row.dimension_values[2].value
+                resource_type = row.dimension_values[3].value
+                
+                event_count = float(row.metric_values[0].value or 0)
+                page_duration = float(row.metric_values[1].value or 0)
+                resource_duration = float(row.metric_values[2].value or 0)
+                transfer_size = float(row.metric_values[3].value or 0)
+                resource_repeat = float(row.metric_values[4].value or 0)
+
+                # DEBUG: Imprimir primeras 3 filas para ver qué valores llegan
+                if filtered_count < 3:
+                    print(f"🔍 DEBUG Row {filtered_count}:")
+                    print(f"  Resource: {resource_name}")
+                    print(f"  Event Count: {event_count}")
+                    print(f"  Resource Duration: {resource_duration}")
+                    print(f"  Type: {resource_type}")
+
+            except (ValueError, IndexError) as e:
+                print(f"❌ Error parsing row: {e}")
+                continue
+
+            # FILTRO CRÍTICO: Solo eventos resource_performance
+            if event_name != "resource_performance":
+                continue
+
+            # Normalizar y filtrar por URL
+            normalized_page = normalize_url(page_path.lower())
+            if normalized_page != normalized_search:
+                continue
+
+            filtered_count += 1
+
+            # Extraer hostname del recurso
+            try:
+                parsed_resource = urlparse(resource_name)
+                resource_host = parsed_resource.netloc if parsed_resource.netloc else resource_name
+            except:
+                resource_host = resource_name
+
+            # Determinar si es externo o interno
+            try:
+                parsed_page = urlparse(page_path)
+                page_host = parsed_page.netloc
+                is_external = resource_host and page_host not in resource_host and resource_host != page_host
+            except:
+                is_external = False
+
+            # Clave de agrupación
+            key = resource_host if is_external else resource_name
+
+            if key not in grouped:
+                grouped[key] = {
+                    "host": resource_host,
+                    "type": resource_type,
+                    "event_count": 0,
+                    "total_duration": 0,
+                    "total_repeat": 0,
+                    "total_size": 0,
+                }
+
+            grouped[key]["event_count"] += event_count
+            grouped[key]["total_duration"] += resource_duration
+            grouped[key]["total_repeat"] += resource_repeat
+            grouped[key]["total_size"] += transfer_size
+
+        # 5. Calcular promedios usando event_count
+        if filtered_count == 0:
+            return JsonResponse({
+                "url": search_url,
+                "total_resources": 0,
+                "resources": []
+            })
+
+        resources = []
+        for name, data in grouped.items():
+            # CLAVE: Dividir entre event_count (cantidad real de eventos disparados)
+            # NO entre "count" (cantidad de filas de GA4)
+            if data["event_count"] > 0:
+                avg_duration = data["total_duration"] / data["event_count"]
+                avg_repeat = data["total_repeat"] / data["event_count"]
+                avg_size = data["total_size"] / data["event_count"]
+            else:
+                avg_duration = avg_repeat = avg_size = 0
+
+            resources.append({
+                "name": name,
+                "type": data["type"],
+                "duration_avg": round(avg_duration, 3),  # 3 decimales para valores como 0.324
+                "repeat_avg": round(avg_repeat, 2),
+                "size_avg": round(avg_size / 1024, 2) if avg_size > 0 else 0,  # Convertir a KB
+            })
+
+        # Ordenar por duración descendente
+        resources.sort(key=lambda x: x["duration_avg"], reverse=True)
+        # 🔎 IMPRIMIR LAS FILAS CON avg_duration > 10
+        print("\n=== RECURSOS CON avg_duration > 10s ===")
+        for r in resources:
+            if r["duration_avg"] > 10:
+                print(f"⚠️ {r['name']} | {r['type']} | avg_duration: {r['duration_avg']} sec | repeat_avg: {r['repeat_avg']}")
+        print("=== FIN ===\n")
+        return JsonResponse({
+            "url": search_url,
+            "total_resources": len(resources),
+            "filtered_rows": filtered_count,
+            "resources": resources,
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error en GA4 Page Resources: {traceback.format_exc()}")
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+
+
+# ============================================================
+# ENDPOINT 2: DATOS POR HORA
+# ============================================================
+
+
+def ga4_resources_hourly(request):
+    """
+    Versión con DEBUG: imprime todo lo necesario para entender la data recibida.
+    """
+    try:
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        property_id = os.getenv("GA4_PROPERTY_ID")
+
+        print("\n======= GA4 HOURLY DEBUG START =======")
+        print("URL PARAM:", request.GET.get("url"))
+        print("RESOURCES PARAM:", request.GET.get("resources"))
+        print("START/END:", request.GET.get("start"), request.GET.get("end"))
+
+        if not credentials_path or not property_id:
+            return JsonResponse({"error": "Credenciales o property ID no definidas"}, status=500)
+
+        search_url = request.GET.get("url")
+        resources_param = request.GET.get("resources")
+
+        if not search_url:
+            return JsonResponse({"error": "Parámetro 'url' requerido"}, status=400)
+
+        if not resources_param:
+            return JsonResponse({"error": "Parámetro 'resources' requerido"}, status=400)
+
+        resource_names_raw = [r.strip() for r in resources_param.split(",") if r.strip()]
+        if not resource_names_raw:
+            return JsonResponse({"error": "Lista de recursos vacía"}, status=400)
+
+        print("RESOURCES RAW:", resource_names_raw)
+
+        start_date = request.GET.get("start")
+        end_date = request.GET.get("end")
+        start_date, end_date = _get_date_range(start_date, end_date)
+
+        normalized_search = _normalize_url(search_url.lower())
+        print("NORMALIZED SEARCH:", normalized_search)
+
+        # Normalización usada en resources_general
+        def normalize_resource_key(resource):
+            try:
+                parsed = urlparse(resource)
+                host = parsed.netloc
+                path = parsed.path
+                if host:
+                    return host + path
+                return resource
+            except:
+                return resource
+
+        requested_resources = {normalize_resource_key(r) for r in resource_names_raw}
+        print("REQUESTED NORMALIZED RESOURCES:", requested_resources)
+
+        client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+        response = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="eventName"),
+                    Dimension(name="customEvent:page_location_loadPage"),
+                    Dimension(name="customEvent:resource_name_loadPage"),
+                    Dimension(name="hour"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                    Metric(name="customEvent:resource_total_duration_loadPage"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                limit=5000,
+            )
+        )
+
+        hourly_data = {}
+
+        print("\n--- COMENZANDO LECTURA DE FILAS GA4 ---")
+
+        for row in response.rows:
+            try:
+                event_name = row.dimension_values[0].value
+                page_path = row.dimension_values[1].value
+                resource_name = row.dimension_values[2].value
+                hour = row.dimension_values[3].value
+
+                event_count = float(row.metric_values[0].value or 0)
+                resource_duration = float(row.metric_values[1].value or 0)
+            except:
+                print("❌ ERROR LEYENDO FILA")
+                continue
+
+            # === PRINT RAW ROW BEFORE FILTERING ===
+            print("\nROW RAW →", {
+                "event": event_name,
+                "page_path": page_path,
+                "resource_name": resource_name,
+                "hour": hour,
+                "event_count": event_count,
+                "resource_duration": resource_duration
+            })
+
+            if event_name != "resource_performance":
+                print("⛔ DESCARTADO: event != resource_performance")
+                continue
+
+            normalized_page = _normalize_url(page_path.lower())
+            print("NORMALIZED PAGE:", normalized_page)
+
+            if normalized_page != normalized_search:
+                print("⛔ DESCARTADO: página no coincide con búsqueda")
+                continue
+
+            # Parse recursos y página
+            try:
+                parsed_res = urlparse(resource_name)
+                res_host = parsed_res.netloc if parsed_res.netloc else resource_name
+            except:
+                res_host = resource_name
+
+            parsed_page = urlparse(page_path)
+            page_host = parsed_page.netloc
+
+            is_external = res_host and page_host not in res_host and res_host != page_host
+            key = res_host if is_external else resource_name
+
+            print("RESOURCE HOST:", res_host)
+            print("PAGE HOST:", page_host)
+            print("EXTERNAL?:", is_external)
+            print("KEY:", key)
+
+            if resource_name not in resource_names_raw:
+                print("⛔ DESCARTADO: recurso no coincide EXACTAMENTE")
+                continue
+            # Si pasó todos los filtros → Es válido
+            print("✔ ACEPTADO →", key)
+
+            # Agregar hora
+            if key not in hourly_data:
+                hourly_data[key] = {}
+
+            if event_count > 0:
+                hourly_data[key][hour] = round(resource_duration / event_count, 3)
+
+        print("\n======= GA4 HOURLY DEBUG END =======\n")
+
+        return JsonResponse({
+            "url": search_url,
+            "start_date": start_date,
+            "end_date": end_date,
+            "resources": hourly_data
+        })
+
+    except Exception as e:
+        import traceback
+        print("Error en GA4 Hourly:", traceback.format_exc())
+        return JsonResponse({"error": str(e)}, status=500)
+
+# ============================================================
+# ENDPOINT 3: DATOS POR DÍA
+# ============================================================
+
+def ga4_resources_daily(request):
+    """
+    Retorna promedios de duración por día para recursos específicos.
+    Parámetros: ?url=... &resources=name1,name2 &start=... &end=...
+    """
+    try:
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        property_id = os.getenv("GA4_PROPERTY_ID")
+
+        if not credentials_path or not property_id:
+            return JsonResponse({"error": "Credenciales o property ID no definidas"}, status=500)
+
+        # Validar parámetros
+        search_url = request.GET.get("url")
+        resources_param = request.GET.get("resources")
+        
+        if not search_url:
+            return JsonResponse({"error": "Parámetro 'url' requerido"}, status=400)
+        
+        if not resources_param:
+            return JsonResponse({"error": "Parámetro 'resources' requerido"}, status=400)
+
+        resource_names = [r.strip() for r in resources_param.split(",") if r.strip()]
+        
+        if not resource_names:
+            return JsonResponse({"error": "Lista de recursos vacía"}, status=400)
+
+        start_date = request.GET.get("start")
+        end_date = request.GET.get("end")
+        start_date, end_date = _get_date_range(start_date, end_date)
+
+        normalized_search = _normalize_url(search_url.lower())
+
+        client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+        # Consulta GA4 por día
+        response = client.run_report(
+            RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="eventName"),
+                    Dimension(name="customEvent:page_location_loadPage"),
+                    Dimension(name="customEvent:resource_name_loadPage"),
+                    Dimension(name="date"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                    Metric(name="customEvent:resource_total_duration_loadPage"),
+                ],
+                date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+                limit=5000,
+            )
+        )
+
+        # Procesar datos
+        daily_data = {}
+
+        for row in response.rows:
+            try:
+                event_name = row.dimension_values[0].value
+                page_path = row.dimension_values[1].value
+                resource_name = row.dimension_values[2].value
+                date = row.dimension_values[3].value
+                
+                event_count = float(row.metric_values[0].value or 0)
+                resource_duration = float(row.metric_values[1].value or 0)
+
+            except (ValueError, IndexError):
+                continue
+
+            if event_name != "resource_performance":
+                continue
+
+            normalized_page = _normalize_url(page_path.lower())
+            if normalized_page != normalized_search:
+                continue
+
+            key = _get_resource_key(resource_name, page_path, "")
+            
+            if key not in resource_names:
+                continue
+
+            if key not in daily_data:
+                daily_data[key] = {}
+
+            if event_count > 0:
+                daily_data[key][date] = round(resource_duration / event_count, 3)
+
+        return JsonResponse({
+            "url": search_url,
+            "start_date": start_date,
+            "end_date": end_date,
+            "resources": daily_data
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error en GA4 Daily: {traceback.format_exc()}")
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+
+
+
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt

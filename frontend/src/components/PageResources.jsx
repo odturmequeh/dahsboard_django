@@ -7,6 +7,7 @@ import {
   XAxis,
   YAxis,
   Tooltip,
+  Legend,
 } from "recharts";
 
 export default function PageResources({ startDate, endDate }) {
@@ -15,12 +16,14 @@ export default function PageResources({ startDate, endDate }) {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
   const [visibleRows, setVisibleRows] = useState(5);
+  const [selectedResource, setSelectedResource] = useState(null);
 
-  const [selectedResource, setSelectedResource] = useState(null); // 🌟 Modal
-  
+  const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard/resources";
 
-  const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard";
-
+  /** ===============================
+   *  🔍 BUSCAR RECURSOS
+   *  GET /resources/general/
+   *  =============================== */
   const handleSearch = async () => {
     const trimmedUrl = searchUrl.trim();
     if (!trimmedUrl) {
@@ -33,47 +36,112 @@ export default function PageResources({ startDate, endDate }) {
     setResults(null);
     setVisibleRows(5);
 
-    await new Promise(resolve => setTimeout(resolve, 30));
-
     try {
       const response = await fetch(
-        `${API_BASE_URL}/page-resources/?url=${encodeURIComponent(trimmedUrl)}&start=${startDate}&end=${endDate}`
+        `${API_BASE_URL}/general/?url=${encodeURIComponent(trimmedUrl)}&start=${startDate}&end=${endDate}`
       );
 
-      if (!response.ok) {
-        throw new Error(`Error ${response.status}: ${response.statusText}`);
-      }
+      if (!response.ok) throw new Error(`Error ${response.status}`);
 
       const data = await response.json();
 
-      if (data.error) {
-        setError(data.error);
-        return;
-      }
-
-      if (data.total_resources === 0) {
-        setError(`❌ No se encontraron resultados para: ${trimmedUrl}`);
-        return;
+      if (data.error) return setError(data.error);
+      if (!data.resources || data.resources.length === 0) {
+        return setError(`❌ No se encontraron resultados para ${trimmedUrl}`);
       }
 
       setResults(data);
-
     } catch (err) {
-      console.error("❌ Error al buscar recursos:", err);
-      setError("Error al conectar con el servidor. Verifica que Django esté corriendo.");
+      console.error(err);
+      setError("Error al conectar con el servidor.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleKeyPress = (e) => {
-    if (e.key === "Enter") {
-      handleSearch();
+  /** ===============================
+   *  📌 DETALLE DE RECURSO AL HACER CLICK
+   *  Llama:
+   *  GET /resources/daily/?resources=nombre
+   *  GET /resources/hourly/?resources=nombre
+   *  =============================== */
+  const openResourceDetail = async (resource) => {
+    try {
+      setSelectedResource({ ...resource, loading: true });
+
+      // CORRECCIÓN: Usar "resources" (plural) en lugar de "resource"
+      const [dailyRes, hourlyRes] = await Promise.all([
+        fetch(
+          `${API_BASE_URL}/daily/?resources=${encodeURIComponent(resource.name)}&url=${encodeURIComponent(
+            searchUrl
+          )}&start=${startDate}&end=${endDate}`
+        ),
+        fetch(
+          `${API_BASE_URL}/hourly/?resources=${encodeURIComponent(resource.name)}&url=${encodeURIComponent(
+            searchUrl
+          )}&start=${startDate}&end=${endDate}`
+        ),
+      ]);
+
+      const dailyData = await dailyRes.json();
+      const hourlyData = await hourlyRes.json();
+
+      // Extraer datos del recurso específico
+      const dailyValues = dailyData.resources?.[resource.name] || {};
+      const hourlyValues = hourlyData.resources?.[resource.name] || {};
+
+      setSelectedResource({
+        ...resource,
+        daily: dailyValues,
+        hourly: hourlyValues,
+        loading: false,
+      });
+    } catch (err) {
+      console.error("Error obteniendo detalle:", err);
+      setSelectedResource({
+        ...resource,
+        daily: {},
+        hourly: {},
+        loading: false,
+        error: "Error al cargar los datos",
+      });
     }
   };
 
-  const showMoreRows = () => {
-    setVisibleRows((prev) => prev + 5);
+  const handleKeyPress = (e) => e.key === "Enter" && handleSearch();
+  const showMoreRows = () => setVisibleRows((prev) => prev + 5);
+
+  // Convertir objeto de fechas a array para Recharts
+  const prepareDailyData = (dailyObj) => {
+    if (!dailyObj || Object.keys(dailyObj).length === 0) return [];
+    
+    return Object.entries(dailyObj)
+      .map(([date, duration]) => ({
+        date: formatDate(date), // Formato más legible
+        duration: duration,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  };
+
+  // Convertir objeto de horas a array para Recharts
+  const prepareHourlyData = (hourlyObj) => {
+    if (!hourlyObj || Object.keys(hourlyObj).length === 0) return [];
+    
+    return Object.entries(hourlyObj)
+      .map(([hour, duration]) => ({
+        hour: `${hour}:00`,
+        duration: duration,
+      }))
+      .sort((a, b) => parseInt(a.hour) - parseInt(b.hour));
+  };
+
+  // Formatear fecha de YYYYMMDD a DD/MM/YYYY
+  const formatDate = (dateStr) => {
+    if (!dateStr || dateStr.length !== 8) return dateStr;
+    const year = dateStr.substring(0, 4);
+    const month = dateStr.substring(4, 6);
+    const day = dateStr.substring(6, 8);
+    return `${day}/${month}`;
   };
 
   return (
@@ -90,23 +158,17 @@ export default function PageResources({ startDate, endDate }) {
           value={searchUrl}
           onChange={(e) => setSearchUrl(e.target.value)}
           onKeyPress={handleKeyPress}
-          className="w-full sm:w-80 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#E60000] focus:border-transparent outline-none text-sm"
+          className="w-full sm:w-80 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#E60000]"
         />
+
         <button
           onClick={handleSearch}
           disabled={loading}
-          className="bg-[#E60000] text-white px-5 py-2 rounded-lg hover:bg-red-700 transition-colors font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed whitespace-nowrap"
+          className="bg-[#E60000] text-white px-5 py-2 rounded-lg hover:bg-red-700 font-semibold disabled:bg-gray-400"
         >
           {loading ? "Buscando..." : "Buscar"}
         </button>
       </div>
-
-      {/* Loading */}
-      {loading && (
-        <div className="text-center py-8">
-          <p className="text-[#E60000] font-medium text-lg">⏳ Cargando información...</p>
-        </div>
-      )}
 
       {/* Error */}
       {error && !loading && (
@@ -115,185 +177,229 @@ export default function PageResources({ startDate, endDate }) {
         </div>
       )}
 
-      {/* Resultados */}
+      {/* Tabla de resultados */}
       {results && !loading && (
-        <div className="text-left">
-          <div className="mb-4">
-            <h3 className="text-lg font-bold mb-1">
-              📋 Recursos cargados en: <span className="text-[#E60000]">{results.url}</span>
-            </h3>
-            <p className="text-sm text-gray-600">
-              Total de recursos únicos: <span className="font-semibold">{results.total_resources}</span>
-              {" "} | Filas analizadas: <span className="font-semibold">{results.filtered_rows}</span>
-            </p>
+        <div>
+          <h3 className="text-lg font-bold mb-2">
+            📋 {results.total_resources} recursos analizados
+          </h3>
+
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="bg-gray-200">
+                  <th className="p-3 text-left">Recurso</th>
+                  <th className="p-3 text-left">Tipo</th>
+                  <th className="p-3 text-center">Duración (ms)</th>
+                  <th className="p-3 text-center">Repetición</th>
+                  {/* <th className="p-3 text-center">Tamaño (KB)</th> */}
+                </tr>
+              </thead>
+
+              <tbody>
+                {results.resources.slice(0, visibleRows).map((resource, i) => (
+                  <tr
+                    key={i}
+                    //onClick desactivado
+                    //onClick={() => openResourceDetail(resource)}
+                    className="border-b"
+                  >
+                    <td className="p-3 max-w-xs truncate" title={resource.name}>
+                      {resource.name}
+                    </td>
+                    <td className="p-3">
+                      <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs font-semibold">
+                        {resource.type}
+                      </span>
+                    </td>
+                    <td className="p-3 text-center font-mono">
+                      {resource.duration_avg.toFixed(2)}
+                    </td>
+                    <td className="p-3 text-center">
+                      {resource.repeat_avg.toFixed(2)}
+                    </td>
+                    {/*
+                    <td className="p-3 text-center">
+                      {resource.size_avg.toFixed(2)}
+                    </td>
+                    */}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
 
-          {/* Tabla */}
-<div className="overflow-x-auto relative">
-  <table className="w-full border-collapse">
-    <thead>
-      <tr className="bg-gray-100">
-        <th className="p-3 text-left text-sm font-bold text-gray-700 border-b-2">
-          Resource Name / Dominio
-        </th>
-        <th className="p-3 text-left text-sm font-bold text-gray-700 border-b-2">
-          Type
-        </th>
-        <th className="p-3 text-center text-sm font-bold text-gray-700 border-b-2">
-          Duration Avg
-        </th>
-        <th className="p-3 text-center text-sm font-bold text-gray-700 border-b-2">
-          Repeat
-        </th>
-      </tr>
-    </thead>
-    <tbody>
-      {results.resources.slice(0, visibleRows).map((resource, idx) => (
-        <tr
-          key={idx}
-          onClick={() => setSelectedResource(resource)} // 🌟 Abrir modal
-          className="border-b cursor-pointer relative
-                     hover:bg-red-50 hover:shadow-md transition-all duration-200"
-        >
-          <td className="p-3 text-sm text-gray-700 break-all relative group">
-            {resource.name}
-            {/* Tooltip */}
-            <span className="absolute left-1/2 -top-6 transform -translate-x-1/2
-                             bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0
-                             group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
-              Da click para ver detalle
-            </span>
-          </td>
-          <td className="p-3 text-sm text-gray-600">{resource.type}</td>
-          <td className="p-3 text-center text-sm font-medium text-gray-700">
-            {resource.duration_avg.toFixed(2)}
-          </td>
-          <td className="p-3 text-center text-sm text-gray-600">
-            {resource.repeat_avg.toFixed(2)}
-          </td>
-        </tr>
-      ))}
-    </tbody>
-  </table>
-</div>
-
-
-          {/* Botón Mostrar más */}
+          {/* Mostrar más */}
           {visibleRows < results.resources.length && (
             <div className="text-center mt-6">
               <button
                 onClick={showMoreRows}
-                className="bg-[#E60000] text-white px-5 py-2 rounded-lg hover:bg-red-700 transition-colors font-semibold"
+                className="bg-[#E60000] text-white px-5 py-2 rounded-lg hover:bg-red-700 font-semibold"
               >
-                Mostrar más
+                Mostrar más ({results.resources.length - visibleRows} restantes)
               </button>
             </div>
           )}
         </div>
       )}
 
-{/* ==========================
-   🌟 MODAL DE DETALLE
-=========================== */}
-{selectedResource && (
-  <div className="fixed inset-0 bg-black bg-opacity-40 backdrop-blur-sm flex items-center justify-center z-50 overflow-auto">
-    <div className="bg-white rounded-2xl shadow-xl p-6 w-[90%] max-w-5xl max-h-[90vh] animate-fadeIn overflow-y-auto">
-
-      <h2 className="text-xl font-bold mb-4 break-all">
-        {selectedResource.name}
-      </h2>
-
-      <p className="text-gray-700 text-sm">
-        <strong>Tipo:</strong> {selectedResource.type}
-      </p>
-
-      <p className="text-gray-700 text-sm mt-2">
-        <strong>Duración promedio:</strong>{" "}
-        {selectedResource.duration_avg.toFixed(2)} ms
-      </p>
-
-      <p className="text-gray-700 text-sm mt-2">
-        <strong>Repetición promedio:</strong>{" "}
-        {selectedResource.repeat_avg.toFixed(2)}
-      </p>
-
       {/* ==========================
-            📊 GRÁFICAS LADO A LADO
+           🌟 MODAL DETALLE
       =========================== */}
-      <div className="mt-6 flex gap-6 w-full flex-wrap">
-        {/* Gráfico por día */}
-        {selectedResource.daily && (
-          <div className="flex-1 min-w-[300px]">
-            <h3 className="text-md font-semibold mb-2">📆 Promedio por día</h3>
-            <div className="w-full h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={Object.keys(selectedResource.daily).map((day) => ({
-                    day,
-                    duration: selectedResource.daily[day],
-                  }))}
-                >
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="day"
-                    tick={{ fontSize: 10 }}
-                    angle={-30}
-                    textAnchor="end"
-                    height={50}
-                  />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v) => `${v} ms`} />
-                  <Line type="monotone" dataKey="duration" stroke="#005BE6" strokeWidth={2} dot />
-                </LineChart>
-              </ResponsiveContainer>
+     {/**/}
+      {selectedResource && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-6xl max-h-[90vh] overflow-auto">
+            {/* Header */}
+            <div className="border-b pb-4 mb-6">
+              <h2 className="text-xl font-bold break-all text-gray-800">
+                {selectedResource.name}
+              </h2>
+              <div className="flex gap-4 mt-3 text-sm text-gray-600">
+                <span className="flex items-center gap-1">
+                  <span className="font-semibold">Tipo:</span> {selectedResource.type}
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="font-semibold">Duración promedio:</span>{" "}
+                  {selectedResource.duration_avg.toFixed(2)} ms
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="font-semibold">Tamaño:</span>{" "}
+                  {selectedResource.size_avg.toFixed(2)} KB
+                </span>
+              </div>
             </div>
+
+            {selectedResource.loading && (
+              <div className="text-center py-8">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-red-600"></div>
+                <p className="text-gray-600 mt-2">Cargando detalle...</p>
+              </div>
+            )}
+
+            {selectedResource.error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
+                {selectedResource.error}
+              </div>
+            )}
+
+            {!selectedResource.loading && !selectedResource.error && (
+              <div className="space-y-8">
+                {/* Gráfico por día */}
+                <div>
+                  <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                    📆 Duración promedio por día
+                    <span className="text-sm font-normal text-gray-500">
+                      ({Object.keys(selectedResource.daily || {}).length} días)
+                    </span>
+                  </h3>
+                  {Object.keys(selectedResource.daily || {}).length > 0 ? (
+                    <div className="w-full h-80 bg-gray-50 rounded-lg p-4">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={prepareDailyData(selectedResource.daily)}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                          <XAxis 
+                            dataKey="date" 
+                            tick={{ fontSize: 12 }}
+                            angle={-45}
+                            textAnchor="end"
+                            height={80}
+                          />
+                          <YAxis 
+                            tick={{ fontSize: 12 }}
+                            label={{ value: 'Duración (ms)', angle: -90, position: 'insideLeft' }}
+                          />
+                          <Tooltip 
+                            contentStyle={{ 
+                              backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                              border: '1px solid #ccc',
+                              borderRadius: '8px'
+                            }}
+                            formatter={(value) => [`${value.toFixed(2)} ms`, 'Duración']}
+                          />
+                          <Legend />
+                          <Line 
+                            type="monotone" 
+                            dataKey="duration" 
+                            stroke="#005BE6" 
+                            strokeWidth={2}
+                            dot={{ fill: '#005BE6', r: 4 }}
+                            activeDot={{ r: 6 }}
+                            name="Duración"
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
+                      No hay datos disponibles por día
+                    </div>
+                  )}
+                </div>
+
+                {/* Gráfico por hora */}
+                <div>
+                  <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                    ⏱ Duración promedio por hora del día
+                    <span className="text-sm font-normal text-gray-500">
+                      ({Object.keys(selectedResource.hourly || {}).length} horas)
+                    </span>
+                  </h3>
+                  {Object.keys(selectedResource.hourly || {}).length > 0 ? (
+                    <div className="w-full h-80 bg-gray-50 rounded-lg p-4">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={prepareHourlyData(selectedResource.hourly)}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                          <XAxis 
+                            dataKey="hour" 
+                            tick={{ fontSize: 12 }}
+                            label={{ value: 'Hora', position: 'insideBottom', offset: -5 }}
+                          />
+                          <YAxis 
+                            tick={{ fontSize: 12 }}
+                            label={{ value: 'Duración (ms)', angle: -90, position: 'insideLeft' }}
+                          />
+                          <Tooltip 
+                            contentStyle={{ 
+                              backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                              border: '1px solid #ccc',
+                              borderRadius: '8px'
+                            }}
+                            formatter={(value) => [`${value.toFixed(2)} ms`, 'Duración']}
+                          />
+                          <Legend />
+                          <Line 
+                            type="monotone" 
+                            dataKey="duration" 
+                            stroke="#E60000" 
+                            strokeWidth={2}
+                            dot={{ fill: '#E60000', r: 4 }}
+                            activeDot={{ r: 6 }}
+                            name="Duración"
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
+                      No hay datos disponibles por hora
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Botón cerrar */}
+            <button
+              onClick={() => setSelectedResource(null)}
+              className="mt-6 w-full bg-[#E60000] text-white py-3 rounded-lg hover:bg-red-700 font-semibold transition-colors"
+            >
+              Cerrar
+            </button>
           </div>
-        )}
-
-        {/* Gráfico por hora */}
-        {selectedResource.hourly && (
-          <div className="flex-1 min-w-[300px]">
-            <h3 className="text-md font-semibold mb-2">⏱ Promedio por hora</h3>
-            <div className="w-full h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={Object.keys(selectedResource.hourly).map((hour) => ({
-                    hour,
-                    duration: selectedResource.hourly[hour],
-                  }))}
-                >
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="hour"
-                    tick={{ fontSize: 11 }}
-                    label={{ value: "Hora", position: "insideBottomRight", offset: -5 }}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 11 }}
-                    label={{ value: "ms", angle: -90, position: "insideLeft" }}
-                  />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="duration" stroke="#E60000" strokeWidth={2} dot />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Botón cerrar */}
-      <button
-        onClick={() => setSelectedResource(null)}
-        className="mt-6 w-full bg-[#E60000] text-white py-2 rounded-lg hover:bg-red-700 transition"
-      >
-        Cerrar
-      </button>
-
-    </div>
-  </div>
-)}
-
-
+        </div>
+      )}
+      
     </div>
   );
 }
