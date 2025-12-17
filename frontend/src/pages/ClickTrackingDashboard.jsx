@@ -2,6 +2,7 @@ import EmbudoMigra from "../components/EmbudoMigra.jsx";
 import SesionesVsComprasComparacion from "../components/SesionesVsCompra_Comparacion.jsx";
 import TrafficChannelSummary from "../components/traffic-chanel-summary.jsx";
 import TrafficDetailSummary from "../components/traffic_detail.jsx";
+import DateComponentsMigra from "../components/dateComponentsMigra.jsx";
 import { useNavigate } from "react-router-dom";
 
 export default function EmbudoMigracion() {
@@ -24,12 +25,7 @@ export default function EmbudoMigracion() {
       <EmbudoMigra />
 
       {/* 🔹 Comparación sesiones vs compras */}
-      <SesionesVsComprasComparacion />
-
-      {/* 🔹 Canales de Trafico */}
-      <TrafficChannelSummary />
-      {/* 🔹 Canales de Trafico */}
-      <TrafficDetailSummary />
+      <DateComponentsMigra />
     </div>
   );
 }

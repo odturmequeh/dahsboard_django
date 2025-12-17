@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 
-export default function SesionesVsComprasComparacion() {
+export default function SesionesVsComprasComparacion({
+  p2Start,
+  p2End,
+  setP2Start,
+  setP2End
+}) {
   /* =========================
      Estados fechas
   ========================= */
@@ -31,8 +37,6 @@ const defaultP1Month = `${prevYear}-${pad(prevMonth)}`;
    Estados
 ========================= */
 const [p1Month, setP1Month] = useState(defaultP1Month);
-const [p2Start, setP2Start] = useState(defaultP2Start);
-const [p2End, setP2End] = useState(defaultP2End);
   /* =========================
      Estados data
   ========================= */
@@ -125,71 +129,169 @@ const lastDayOfMonth = (dateStr) => {
     }
   );
 }, [data, p1Month, p2Start, p2End]);
+  
+const totals = useMemo(() => {
+  let p1Sessions = 0;
+  let p1Purchases = 0;
+  let p2Sessions = 0;
+  let p2Purchases = 0;
+
+  rows.forEach((r) => {
+    if (r.p1) {
+      p1Sessions += r.p1.sessions;
+      p1Purchases += r.p1.purchases;
+    }
+    if (r.p2) {
+      p2Sessions += r.p2.sessions;
+      p2Purchases += r.p2.purchases;
+    }
+  });
+
+  return {
+    p1: { sessions: p1Sessions, purchases: p1Purchases },
+    p2: { sessions: p2Sessions, purchases: p2Purchases },
+  };
+}, [rows]);
+
 
   /* =========================
      Tabla
   ========================= */
-  const Table = ({ title, keyName, showVariation }) => (
-    <div className="bg-white rounded-xl shadow p-6 w-full">
-      <h3 className="text-lg font-semibold mb-4 text-center">
-        {title}
-      </h3>
+  const exportToExcel = (keyName) => {
+  const sheetData = rows.map((r) => {
+    const d = r[keyName];
+    return {
+      Fecha: keyName === "p1" ? r.p1Date : r.p2Date,
+      Sesiones: d ? d.sessions : 0,
+      Compras: d ? d.purchases : 0,
+      ...(keyName === "p2" && {
+        "Variación %":
+          r.variation !== null ? Number(r.variation.toFixed(1)) : null,
+      }),
+    };
+  });
 
-      <table className="w-full text-sm border">
-        <thead className="bg-gray-100">
-          <tr>
-            <th className="p-2 text-left">Fecha</th>
-            <th className="p-2 text-right">Sesiones</th>
-            <th className="p-2 text-right">Compras</th>
-            {showVariation && (
-              <th className="p-2 text-right">Δ Compras</th>
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => {
-            const d = r[keyName];
-            return (
-              <tr
-                key={i}
-                className={`border-t ${
-                  !d ? "bg-gray-50 text-gray-400" : ""
-                }`}
-              >
-                <td className="p-2">
-                  {keyName === "p1"
-                    ? r.p1Date || "—"
-                    : r.p2Date}
-                </td>
-                <td className="p-2 text-right">
-                  {d ? d.sessions.toLocaleString() : "—"}
-                </td>
-                <td className="p-2 text-right">
-                  {d ? d.purchases.toLocaleString() : "—"}
-                </td>
+  // fila TOTAL
+  sheetData.push({
+    Fecha: "TOTAL",
+    Sesiones: totals[keyName].sessions,
+    Compras: totals[keyName].purchases,
+  });
 
-                {showVariation && (
-                  <td
-                    className={`p-2 text-right font-medium ${
-                      r.variation === null
-                        ? "text-gray-400"
-                        : r.variation >= 0
-                        ? "text-green-600"
-                        : "text-red-600"
-                    }`}
-                  >
-                    {r.variation === null
-                      ? "—"
-                      : `${r.variation.toFixed(1)}%`}
-                  </td>
-                )}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+  const worksheet = XLSX.utils.json_to_sheet(sheetData);
+  const workbook = XLSX.utils.book_new();
+
+  XLSX.utils.book_append_sheet(
+    workbook,
+    worksheet,
+    keyName === "p1" ? "Periodo 1" : "Periodo 2"
   );
+
+  XLSX.writeFile(
+    workbook,
+    `sesiones_vs_compras_${keyName}_${p2Start}_a_${p2End}.xlsx`
+  );
+};
+
+
+
+
+  const Table = ({ title, keyName, showVariation }) => (
+  <div className="bg-white rounded-xl shadow p-6 w-full">
+    <h3 className="text-lg font-semibold mb-4 text-center">
+      {title}
+    </h3>
+
+    <table className="w-full text-sm border">
+      <thead className="bg-gray-100">
+        <tr>
+          <th className="p-2 text-left">Fecha</th>
+          <th className="p-2 text-right">Sesiones</th>
+          <th className="p-2 text-right">Compras</th>
+          {showVariation && (
+            <th className="p-2 text-right">Δ Compras</th>
+          )}
+        </tr>
+      </thead>
+
+      <tbody>
+        {rows.map((r, i) => {
+          const d = r[keyName];
+          return (
+            <tr
+              key={i}
+              className={`border-t ${
+                !d ? "bg-gray-50 text-gray-400" : ""
+              }`}
+            >
+              <td className="p-2">
+                {keyName === "p1"
+                  ? r.p1Date || "—"
+                  : r.p2Date}
+              </td>
+              <td className="p-2 text-right">
+                {d ? d.sessions.toLocaleString() : "—"}
+              </td>
+              <td className="p-2 text-right">
+                {d ? d.purchases.toLocaleString() : "—"}
+              </td>
+
+              {showVariation && (
+                <td
+                  className={`p-2 text-right font-medium ${
+                    r.variation === null
+                      ? "text-gray-400"
+                      : r.variation >= 0
+                      ? "text-green-600"
+                      : "text-red-600"
+                  }`}
+                >
+                  {r.variation === null
+                    ? "—"
+                    : `${r.variation.toFixed(1)}%`}
+                </td>
+              )}
+            </tr>
+          );
+        })}
+      </tbody>
+
+      {/* TOTAL */}
+      <tfoot className="bg-gray-100 font-semibold border-t">
+        <tr>
+          <td className="p-2">TOTAL</td>
+          <td className="p-2 text-right">
+            {totals[keyName].sessions.toLocaleString()}
+          </td>
+          <td className="p-2 text-right">
+            {totals[keyName].purchases.toLocaleString()}
+          </td>
+          {showVariation && <td className="p-2 text-right">—</td>}
+        </tr>
+      </tfoot>
+    </table>
+
+    {/* BOTÓN EXCEL */}
+    <button
+      onClick={() => exportToExcel(keyName)}
+      className="
+    mt-4 inline-flex items-center gap-2
+    px-5 py-2.5
+    rounded-lg
+    bg-emerald-600
+    text-white text-sm font-medium
+    shadow-sm
+    hover:bg-emerald-700
+    hover:shadow-md
+    transition
+    focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-1
+  "
+    >
+      Descargar Excel
+    </button>
+  </div>
+);
+
 
   /* =========================
      Render

@@ -1,15 +1,45 @@
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 
-export default function TrafficChannelSummary() {
+export default function TrafficChannelSummary({
+  startDate,
+  endDate,
+  setStartDate,
+  setEndDate
+}) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [channelType, setChannelType] = useState("all");
 
-  const [startDate, setStartDate] = useState("2025-11-01");
-  const [endDate, setEndDate] = useState("2025-11-30");
-
   // 🔹 Control de paginación
   const [visibleRows, setVisibleRows] = useState(15);
+  const exportToExcel = () => {
+  const rows = filteredData.map((r) => ({
+    Canal: r.Canal,
+    Sesiones: r["Sesiones Mig"],
+    Compras: r["Artículos comprados"],
+    "Tasa de Conversión (%)": r["Tasa de Conversión"],
+    Tipo: r["Tipo de Canal"]
+  }));
+
+  // fila de totales
+  rows.push({
+    Canal: "TOTAL",
+    Sesiones: totals.sesiones,
+    Compras: totals.compras,
+    "Tasa de Conversión (%)": totals.tc.toFixed(2),
+    Tipo: "-"
+  });
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Canales");
+
+  XLSX.writeFile(
+    wb,
+    `canales_trafico_${startDate}_a_${endDate}.xlsx`
+  );
+};
 
   useEffect(() => {
     setLoading(true);
@@ -29,6 +59,32 @@ export default function TrafficChannelSummary() {
     if (channelType === "all") return data;
     return data.filter((row) => row["Tipo de Canal"] === channelType);
   }, [data, channelType]);
+
+  const totals = useMemo(() => {
+  if (!filteredData.length) {
+    return {
+      sesiones: 0,
+      compras: 0,
+      tc: 0
+    };
+  }
+
+  const sesiones = filteredData.reduce(
+    (acc, r) => acc + r["Sesiones Mig"],
+    0
+  );
+
+  const compras = filteredData.reduce(
+    (acc, r) => acc + r["Artículos comprados"],
+    0
+  );
+
+  const tc = sesiones > 0 ? (compras / sesiones) * 100 : 0;
+
+  return { sesiones, compras, tc };
+}, [filteredData]);
+
+
 
   const visibleData = useMemo(() => {
     return filteredData.slice(0, visibleRows);
@@ -55,32 +111,6 @@ export default function TrafficChannelSummary() {
           </p>
         </div>
 
-        {/* Fechas */}
-        <div className="flex gap-4">
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">
-              Inicio
-            </label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="border rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">
-              Fin
-            </label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="border rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
-        </div>
       </div>
 
       {/* Filtros tipo canal */}
@@ -150,7 +180,7 @@ export default function TrafficChannelSummary() {
         </table>
       </div>
 
-      {/* Ver más */}
+{/* Ver más */}
       {visibleRows < filteredData.length && (
         <div className="flex justify-center pt-4">
           <button
@@ -161,6 +191,50 @@ export default function TrafficChannelSummary() {
           </button>
         </div>
       )}
+
+
+{/* Totales + Excel */}
+<div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pt-4 border-t">
+  <div className="flex gap-8">
+  <div>
+    <div className="text-xs uppercase tracking-wide text-gray-500">
+      Total Sesiones
+    </div>
+    <div className="text-2xl font-semibold text-gray-900">
+      {totals.sesiones.toLocaleString()}
+    </div>
+  </div>
+
+  <div>
+      <div className="text-xs uppercase tracking-wide text-emerald-600">
+        Total Compras
+      </div>
+      <div className="text-3xl font-bold text-emerald-700">
+        {totals.compras.toLocaleString()}
+      </div>
+    </div>
+</div>
+
+
+  <button
+    onClick={exportToExcel}
+    className="
+      inline-flex items-center gap-2
+      px-5 py-2.5
+      rounded-lg
+      bg-emerald-600
+      text-white text-sm font-medium
+      shadow-sm
+      hover:bg-emerald-700
+      hover:shadow-md
+      transition
+      focus:outline-none focus:ring-2 focus:ring-emerald-400
+    "
+  >
+    Descargar Excel
+  </button>
+</div>
+      
     </div>
   );
 }

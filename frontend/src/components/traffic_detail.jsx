@@ -1,12 +1,45 @@
 import { useEffect, useState, useMemo } from "react";
+import * as XLSX from "xlsx";
 
-export default function TrafficDetailSummary() {
+export default function TrafficDetailSummary({
+  startDate,
+  endDate,
+  setStartDate,
+  setEndDate
+}) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [startDate, setStartDate] = useState("2025-11-01");
-  const [endDate, setEndDate] = useState("2025-11-30");
   const [visibleRows, setVisibleRows] = useState(15);
   const [selectedChannel, setSelectedChannel] = useState("all");
+  const exportToExcel = () => {
+  const rows = filteredData.map((r) => ({
+    "Canal L1": r["Canal L1"],
+    "Fuente / Medio": r["Fuente/Medio"],
+    Campaña: r["Campaña"],
+    Sesiones: r["Sesiones Mig"],
+    Compras: r["Artículos comprados"],
+    "Tasa de Conversión (%)": r["Tasa de Conversión"]
+  }));
+
+  // Fila de totales
+  rows.push({
+    "Canal L1": "TOTAL",
+    "Fuente / Medio": "-",
+    Campaña: "-",
+    Sesiones: totals.sesiones,
+    Compras: totals.compras,
+    "Tasa de Conversión (%)": totals.tc.toFixed(2)
+  });
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Detalle Tráfico");
+
+  XLSX.writeFile(
+    wb,
+    `detalle_trafico_${startDate}_a_${endDate}.xlsx`
+  );
+};
 
   // Cambio de fechas
   const handleDateChange = (e) => {
@@ -35,6 +68,34 @@ export default function TrafficDetailSummary() {
     if (selectedChannel === "all") return data;
     return data.filter((row) => row["Canal L1"] === selectedChannel);
   }, [data, selectedChannel]);
+
+
+  const totals = useMemo(() => {
+  if (!filteredData.length) {
+    return {
+      sesiones: 0,
+      compras: 0,
+      tc: 0
+    };
+  }
+
+  const sesiones = filteredData.reduce(
+    (acc, r) => acc + r["Sesiones Mig"],
+    0
+  );
+
+  const compras = filteredData.reduce(
+    (acc, r) => acc + r["Artículos comprados"],
+    0
+  );
+
+  const tc = sesiones > 0 ? (compras / sesiones) * 100 : 0;
+
+  return { sesiones, compras, tc };
+}, [filteredData]);
+
+
+
 
   // Lista de canales únicos para los botones
   const channelOptions = useMemo(() => {
@@ -66,31 +127,6 @@ export default function TrafficDetailSummary() {
           <p className="text-sm text-gray-500">
             Periodo: {startDate} → {endDate} | Total filas: {filteredData.length}
           </p>
-        </div>
-
-        {/* Inputs de fecha */}
-        <div className="flex gap-4">
-          <div>
-            <label className="block text-sm text-gray-600">Fecha inicio</label>
-            <input
-              type="date"
-              name="startDate"
-              value={startDate}
-              onChange={handleDateChange}
-              className="border rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-gray-600">Fecha fin</label>
-            <input
-              type="date"
-              name="endDate"
-              value={endDate}
-              onChange={handleDateChange}
-              className="border rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
         </div>
       </div>
 
@@ -154,6 +190,49 @@ export default function TrafficDetailSummary() {
           </button>
         </div>
       )}
+
+      {/* Totales + Excel */}
+<div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pt-4 border-t">
+  <div className="flex gap-8">
+    <div>
+      <div className="text-xs uppercase tracking-wide text-gray-500">
+        Total Sesiones
+      </div>
+      <div className="text-2xl font-semibold text-gray-900">
+        {totals.sesiones.toLocaleString()}
+      </div>
+    </div>
+
+    <div>
+      <div className="text-xs uppercase tracking-wide text-emerald-600">
+        Total Compras
+      </div>
+      <div className="text-3xl font-bold text-emerald-700">
+        {totals.compras.toLocaleString()}
+      </div>
+    </div>
+  </div>
+
+  <button
+    onClick={exportToExcel}
+    className="
+      inline-flex items-center gap-2
+      px-5 py-2.5
+      rounded-lg
+      bg-emerald-600
+      text-white text-sm font-medium
+      shadow-sm
+      hover:bg-emerald-700
+      hover:shadow-md
+      transition
+      focus:outline-none focus:ring-2 focus:ring-emerald-400
+    "
+  >
+    Descargar Excel
+  </button>
+</div>
+
+
     </div>
   );
 }
