@@ -35,6 +35,13 @@ export default function HomePage() {
         >
           Genia Dashboard
         </button>
+
+        <button
+          onClick={() => navigate("/click_tracking")}
+          className="px-8 py-4 bg-gradient-to-r from-green-500 to-green-400 text-white rounded-xl shadow-lg hover:from-green-600 hover:to-green-500 transition-all text-lg font-semibold"
+        >
+          Migración Dashboard
+        </button>
       </div>
 
       {/* Footer */}

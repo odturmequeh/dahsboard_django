@@ -3,6 +3,7 @@ import HomePage from "./pages/HomePage";       // 🔹 Nueva portada
 import TimeLoad from "./pages/TimeLoad";       
 import ClickRelation from "./pages/ClickRelation";
 import GeniaHome from "./pages/GeniaHome";
+import ClickTrackingDashboard from "./pages/ClickTrackingDashboard";
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
         <Route path="/timeLoad" element={<TimeLoad />} />
         <Route path="/click_relation" element={<ClickRelation />} />
         <Route path="/genia" element={<GeniaHome />} />
+        <Route path="/click_tracking" element={<ClickTrackingDashboard />} />
       </Routes>
     </Router>
   );
