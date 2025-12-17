@@ -11,6 +11,8 @@ export default function TrafficDetailSummary({
   const [loading, setLoading] = useState(true);
   const [visibleRows, setVisibleRows] = useState(15);
   const [selectedChannel, setSelectedChannel] = useState("all");
+  const [selectedSourceMedium, setSelectedSourceMedium] = useState("all");
+
   const exportToExcel = () => {
   const rows = filteredData.map((r) => ({
     "Canal L1": r["Canal L1"],
@@ -65,9 +67,19 @@ export default function TrafficDetailSummary({
 
   // Filtrado por Canal L1
   const filteredData = useMemo(() => {
-    if (selectedChannel === "all") return data;
-    return data.filter((row) => row["Canal L1"] === selectedChannel);
-  }, [data, selectedChannel]);
+  return data.filter((row) => {
+    const matchChannel =
+      selectedChannel === "all" ||
+      row["Canal L1"] === selectedChannel;
+
+    const matchSource =
+      selectedSourceMedium === "all" ||
+      row["Fuente/Medio"] === selectedSourceMedium;
+
+    return matchChannel && matchSource;
+  });
+}, [data, selectedChannel, selectedSourceMedium]);
+
 
 
   const totals = useMemo(() => {
@@ -102,6 +114,21 @@ export default function TrafficDetailSummary({
     const channels = Array.from(new Set(data.map((row) => row["Canal L1"])));
     return ["all", ...channels];
   }, [data]);
+const sourceMediumOptions = useMemo(() => {
+  let base = data;
+
+  if (selectedChannel !== "all") {
+    base = base.filter(
+      (row) => row["Canal L1"] === selectedChannel
+    );
+  }
+
+  const sources = Array.from(
+    new Set(base.map((row) => row["Fuente/Medio"]))
+  );
+
+  return ["all", ...sources];
+}, [data, selectedChannel]);
 
   // Ver más filas
   const handleLoadMore = () => {
@@ -137,6 +164,7 @@ export default function TrafficDetailSummary({
             key={ch}
             onClick={() => {
               setSelectedChannel(ch);
+              setSelectedSourceMedium("all");
               setVisibleRows(15); // reset filas al cambiar filtro
             }}
             className={`px-3 py-1 rounded-full text-sm font-medium transition
@@ -150,6 +178,41 @@ export default function TrafficDetailSummary({
           </button>
         ))}
       </div>
+
+      {/* Filtro Fuente / Medio */}
+<div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+  <label className="text-sm font-medium text-gray-600">
+    Fuente / Medio
+  </label>
+
+  <select
+    value={selectedSourceMedium}
+    onChange={(e) => {
+      setSelectedSourceMedium(e.target.value);
+      setVisibleRows(15);
+    }}
+    className="
+      min-w-[240px]
+      px-3 py-2
+      rounded-lg
+      border border-gray-300
+      bg-white
+      text-sm text-gray-700
+      shadow-sm
+      focus:outline-none
+      focus:ring-2 focus:ring-blue-500
+      focus:border-blue-500
+      transition
+    "
+  >
+    {sourceMediumOptions.map((src) => (
+      <option key={src} value={src}>
+        {src === "all" ? "Todas las fuentes / medios" : src}
+      </option>
+    ))}
+  </select>
+</div>
+
 
       {/* Tabla */}
       <div className="overflow-x-auto">
