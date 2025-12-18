@@ -609,7 +609,7 @@ const exportFullReportSingleSheet = () => {
         transition
       "
     >
-      Exportar informe completo (1 hoja)
+      Descargar Excel
     </button>
   </div>
   </div>

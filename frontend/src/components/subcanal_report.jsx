@@ -154,7 +154,14 @@ const [endDate, setEndDate] = useState(defaultEnd);
 
         <button
           onClick={exportToExcel}
-          className="bg-green-600 text-white px-4 py-2 rounded"
+          className="
+        px-6 py-2.5
+        rounded-lg
+        bg-emerald-600
+        text-white text-sm font-medium
+        hover:bg-emerald-700
+        transition
+      "
         >
           Descargar Excel
         </button>
