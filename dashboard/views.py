@@ -9,6 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from collections import defaultdict
 import json
 from django.views.decorators.http import require_GET
+import re
 
 
 def ga4_dashboard_metrics(request):
@@ -2856,3 +2857,164 @@ def ga4_traffic_detail_summary_view(request):
         safe=False
     )
 
+def categorizar_subcanal(source_medium, channel_group):
+    sm = (source_medium or "").lower()
+    cg = (channel_group or "").lower()
+
+    # 1. Claro Colombia
+    if sm == "clarocolombia / referral":
+        return "Claro Colombia"
+
+    # 2. IBM
+    if "ibm" in sm.split(" / ")[0]:
+        return "IBM"
+
+    # 3. SuperApp
+    superapp_regex = (
+        r"superapp / app|app / superapp|mi-claro / app|"
+        r"app / appmiclaro|app / notification_push"
+    )
+    if re.search(superapp_regex, sm):
+        return "SuperApp"
+
+    # 4. Growth
+    growth_patterns = [
+        "growth", "sms", "claro / sms", "rcs", "boton", "notification-push",
+        "owned_rcs", "email", "salesforce", "appcotaimox", "claro-pay",
+        "sfmc", "marketing-cloud", "owned_inapp", "propio",
+        "campaign", "inapp"
+    ]
+    if any(p in sm for p in growth_patterns) or "(not set)" in sm or "banner" in sm:
+        return "Growth"
+
+    # 5. Insider
+    if "insiders / web_push" in sm or "insider / web_push" in sm:
+        return "Insider"
+
+    # 6. Directo
+    if "direct" in sm:
+        return "Directo"
+
+    # 7. Orgánico
+    if cg == "organic":
+        return "Orgánico"
+
+    # 8. Pauta
+    if cg == "paid":
+        return "Pauta"
+
+    # 9. Unassigned
+    if cg == "unassigned":
+        return "Unassigned"
+
+    return "Otros"
+
+
+
+def ga4_subcanal_owned_report(start_date, end_date):
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    if not credentials_path or not property_id:
+        raise RuntimeError("Credenciales GA4 no configuradas")
+
+    client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+    dimensions = [
+        Dimension(name="date"),
+        Dimension(name="sessionSourceMedium"),
+        Dimension(name="sessionCustomChannelGroup:7566460458"),
+        Dimension(name="hostName"),
+        Dimension(name="customEvent:business_unit2"),
+    ]
+
+    metrics = [
+        Metric(name="sessions"),
+        Metric(name="ecommercePurchases"),
+    ]
+
+    dimension_filter = FilterExpression(
+        and_group=FilterExpressionList(
+            expressions=[
+                FilterExpression(
+                    filter=Filter(
+                        field_name="hostName",
+                        string_filter={"value": "tienda.claro.com.co"},
+                    )
+                ),
+                FilterExpression(
+                    filter=Filter(
+                        field_name="customEvent:business_unit2",
+                        string_filter={"value": "migracion"},
+                    )
+                ),
+            ]
+        )
+    )
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=dimensions,
+        metrics=metrics,
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=dimension_filter,
+        limit=100000,
+    )
+
+    response = client.run_report(request)
+
+    # -------- PROCESAMIENTO PARA FRONTEND --------
+
+    tree_data = defaultdict(
+        lambda: defaultdict(lambda: {"sesiones": 0, "ventas": 0})
+    )
+    fechas_presentes = set()
+
+    for row in response.rows:
+        fecha_raw = row.dimension_values[0].value
+        fecha = f"{fecha_raw[:4]}-{fecha_raw[4:6]}-{fecha_raw[6:]}"
+        subcanal = categorizar_subcanal(
+            row.dimension_values[1].value,
+            row.dimension_values[2].value,
+        )
+
+        sesiones = int(row.metric_values[0].value)
+        ventas = int(row.metric_values[1].value)
+
+        fechas_presentes.add(fecha)
+        tree_data[subcanal][fecha]["sesiones"] += sesiones
+        tree_data[subcanal][fecha]["ventas"] += ventas
+
+    lista_fechas = sorted(fechas_presentes)
+
+    datos_front = []
+    for subcanal in sorted(tree_data.keys()):
+        fila = {"grupo": subcanal, "valores": {}}
+        for fecha in lista_fechas:
+            fila["valores"][fecha] = tree_data[subcanal].get(
+                fecha, {"sesiones": 0, "ventas": 0}
+            )
+        datos_front.append(fila)
+
+    return {
+        "encabezados": {
+            "fechas": lista_fechas,
+            "metricas": ["Sesiones", "Ventas"],
+        },
+        "datos": datos_front,
+    }
+
+
+@require_GET
+def ga4_subcanal_owned_view(request):
+    start_date = request.GET.get("start_date")
+    end_date = request.GET.get("end_date")
+
+    if not start_date or not end_date:
+        return JsonResponse(
+            {"error": "Debe enviar start_date y end_date"},
+            status=400,
+        )
+
+    data = ga4_subcanal_owned_report(start_date, end_date)
+    return JsonResponse(data, safe=False)

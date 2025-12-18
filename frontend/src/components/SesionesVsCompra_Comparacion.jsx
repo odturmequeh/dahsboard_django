@@ -153,6 +153,51 @@ const totals = useMemo(() => {
   };
 }, [rows]);
 
+const rowsWithMetrics = useMemo(() => {
+  if (!rows.length) return [];
+
+  return rows.map((r) => {
+    const variationSessions =
+      r.p1 && r.p2 && r.p1.sessions > 0
+        ? ((r.p2.sessions - r.p1.sessions) / r.p1.sessions) * 100
+        : null;
+
+    const variationPurchases =
+      r.p1 && r.p2 && r.p1.purchases > 0
+        ? ((r.p2.purchases - r.p1.purchases) / r.p1.purchases) * 100
+        : null;
+
+    return {
+      ...r,
+      participation: {
+        p1: {
+          sessions:
+            r.p1 && totals.p1.sessions > 0
+              ? (r.p1.sessions / totals.p1.sessions) * 100
+              : null,
+          purchases:
+            r.p1 && totals.p1.purchases > 0
+              ? (r.p1.purchases / totals.p1.purchases) * 100
+              : null,
+        },
+        p2: {
+          sessions:
+            r.p2 && totals.p2.sessions > 0
+              ? (r.p2.sessions / totals.p2.sessions) * 100
+              : null,
+          purchases:
+            r.p2 && totals.p2.purchases > 0
+              ? (r.p2.purchases / totals.p2.purchases) * 100
+              : null,
+        },
+      },
+      variation: {
+        sessions: variationSessions,
+        purchases: variationPurchases,
+      },
+    };
+  });
+}, [rows, totals]);
 
   /* =========================
      Tabla
@@ -193,104 +238,287 @@ const totals = useMemo(() => {
   );
 };
 
+const SummaryVariationTable = () => {
+  const sessionsVariation =
+    totals.p1.sessions > 0
+      ? ((totals.p2.sessions - totals.p1.sessions) / totals.p1.sessions) * 100
+      : null;
+
+  const purchasesVariation =
+    totals.p1.purchases > 0
+      ? ((totals.p2.purchases - totals.p1.purchases) / totals.p1.purchases) * 100
+      : null;
+
+  return (
+    <div className="bg-white rounded-xl shadow p-4 w-full max-w-md mx-auto">
+      <h4 className="text-sm font-semibold mb-3 text-center">
+        Variación Total
+      </h4>
+
+      <table className="w-full text-sm border">
+        <tbody>
+          <tr className="border-t">
+            <td className="p-2">Sesiones</td>
+            <td
+              className={`p-2 text-right font-medium ${
+                sessionsVariation >= 0 ? "text-green-600" : "text-red-600"
+              }`}
+            >
+              {sessionsVariation !== null
+                ? `${sessionsVariation.toFixed(1)}%`
+                : "—"}
+            </td>
+          </tr>
+
+          <tr className="border-t">
+            <td className="p-2">Compras</td>
+            <td
+              className={`p-2 text-right font-medium ${
+                purchasesVariation >= 0 ? "text-green-600" : "text-red-600"
+              }`}
+            >
+              {purchasesVariation !== null
+                ? `${purchasesVariation.toFixed(1)}%`
+                : "—"}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+};
 
 
 
-  const Table = ({ title, keyName, showVariation }) => (
-  <div className="bg-white rounded-xl shadow p-6 w-full">
-    <h3 className="text-lg font-semibold mb-4 text-center">
-      {title}
-    </h3>
+const PeriodTable = ({ title, keyName }) => (
+  <div className="bg-white rounded-xl shadow p-4 w-full">
+    <div className="h-10 flex items-center justify-center mb-3">
+      <h3 className="text-sm font-semibold text-center">{title}</h3>
+    </div>
 
-    <table className="w-full text-sm border">
+    <table className="w-full text-xs border">
       <thead className="bg-gray-100">
         <tr>
           <th className="p-2 text-left">Fecha</th>
           <th className="p-2 text-right">Sesiones</th>
-          <th className="p-2 text-right">Compras</th>
-          {showVariation && (
-            <th className="p-2 text-right">Δ Compras</th>
-          )}
+          <th className="p-2 text-right leading-tight">
+            <span className="block">% Participación Sesiones</span>
+            <span className="block text-xs">
+              en Periodo Selec.
+            </span>
+          </th>
+          <th className="p-2 text-right">Ventas</th>
+          <th className="p-2 text-right leading-tight">
+            <span className="block">% Participación Ventas</span>
+            <span className="block text-xs">
+              en Periodo Selec.
+            </span>
+          </th>
         </tr>
       </thead>
 
       <tbody>
-        {rows.map((r, i) => {
+        {rowsWithMetrics.map((r, i) => {
           const d = r[keyName];
-          return (
-            <tr
-              key={i}
-              className={`border-t ${
-                !d ? "bg-gray-50 text-gray-400" : ""
-              }`}
-            >
-              <td className="p-2">
-                {keyName === "p1"
-                  ? r.p1Date || "—"
-                  : r.p2Date}
-              </td>
-              <td className="p-2 text-right">
-                {d ? d.sessions.toLocaleString() : "—"}
-              </td>
-              <td className="p-2 text-right">
-                {d ? d.purchases.toLocaleString() : "—"}
-              </td>
+          const p = r.participation[keyName];
 
-              {showVariation && (
-                <td
-                  className={`p-2 text-right font-medium ${
-                    r.variation === null
-                      ? "text-gray-400"
-                      : r.variation >= 0
-                      ? "text-green-600"
-                      : "text-red-600"
-                  }`}
-                >
-                  {r.variation === null
-                    ? "—"
-                    : `${r.variation.toFixed(1)}%`}
-                </td>
-              )}
-            </tr>
+          return (
+            <tr key={i} className="border-t h-9">
+  <td className="px-2 h-9 align-middle">
+    {keyName === "p1" ? r.p1Date || "—" : r.p2Date}
+  </td>
+
+  <td className="px-2 h-9 text-right align-middle">
+    {d ? d.sessions.toLocaleString() : "—"}
+  </td>
+
+  <td className="px-2 h-9 text-right text-gray-500 align-middle">
+    {p.sessions !== null ? `${p.sessions.toFixed(1)}%` : "—"}
+  </td>
+
+  <td className="px-2 h-9 text-right align-middle">
+    {d ? d.purchases.toLocaleString() : "—"}
+  </td>
+
+  <td className="px-2 h-9 text-right text-gray-500 align-middle">
+    {p.purchases !== null ? `${p.purchases.toFixed(1)}%` : "—"}
+  </td>
+</tr>
+
           );
         })}
       </tbody>
-
-      {/* TOTAL */}
-      <tfoot className="bg-gray-100 font-semibold border-t">
-        <tr>
-          <td className="p-2">TOTAL</td>
-          <td className="p-2 text-right">
-            {totals[keyName].sessions.toLocaleString()}
-          </td>
-          <td className="p-2 text-right">
-            {totals[keyName].purchases.toLocaleString()}
-          </td>
-          {showVariation && <td className="p-2 text-right">—</td>}
-        </tr>
-      </tfoot>
     </table>
-
-    {/* BOTÓN EXCEL */}
-    <button
-      onClick={() => exportToExcel(keyName)}
-      className="
-    mt-4 inline-flex items-center gap-2
-    px-5 py-2.5
-    rounded-lg
-    bg-emerald-600
-    text-white text-sm font-medium
-    shadow-sm
-    hover:bg-emerald-700
-    hover:shadow-md
-    transition
-    focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-1
-  "
-    >
-      Descargar Excel
-    </button>
   </div>
 );
+const VariationTable = () => (
+  <div className="bg-white rounded-xl shadow p-4 w-full">
+    <div className="h-10 flex items-center justify-center mb-3">
+      <h3 className="text-sm font-semibold text-center">
+        Variación diaria
+      </h3>
+    </div>
+
+    <table className="text-[11px] border border-gray-200 w-auto">
+      <thead className="bg-gray-100">
+  <tr className="h-12">
+    <th className="px-2 h-12 text-right align-middle leading-tight">
+      <span className="block text-xs">Δ</span>
+      <span className="block text-[10px] text-gray-500">
+        Sesiones
+      </span>
+    </th>
+
+    <th className="px-2 h-12 text-right align-middle leading-tight">
+      <span className="block text-xs">Δ</span>
+      <span className="block text-[10px] text-gray-500">
+        Compras
+      </span>
+    </th>
+  </tr>
+</thead>
+
+      <tbody>
+        {rowsWithMetrics.map((r, i) => (
+          <tr key={i} className="border-t h-9">
+  <td
+    className={`px-2 h-9 text-right align-middle font-medium ${
+      r.variation.sessions >= 0
+        ? "text-green-600"
+        : "text-red-600"
+    }`}
+  >
+    {r.variation.sessions !== null
+      ? `${r.variation.sessions.toFixed(1)}%`
+      : "—"}
+  </td>
+
+  <td
+    className={`px-2 h-9 text-right align-middle font-medium ${
+      r.variation.purchases >= 0
+        ? "text-green-600"
+        : "text-red-600"
+    }`}
+  >
+    {r.variation.purchases !== null
+      ? `${r.variation.purchases.toFixed(1)}%`
+      : "—"}
+  </td>
+</tr>
+
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
+
+const buildPeriodoTable = (title, rows, totals, participationKey) => {
+  const aoa = [];
+
+  aoa.push([title]);
+  aoa.push([]);
+
+  aoa.push([
+    "Fecha",
+    "Sesiones",
+    "% Part. Sesiones",
+    "Compras",
+    "% Part. Compras",
+  ]);
+
+  rows.forEach((r) => {
+    aoa.push([
+      participationKey === "p1" ? r.p1Date : r.p2Date,
+      r[participationKey]?.sessions ?? 0,
+      r.participation[participationKey].sessions !== null
+        ? Number(r.participation[participationKey].sessions.toFixed(2))
+        : null,
+      r[participationKey]?.purchases ?? 0,
+      r.participation[participationKey].purchases !== null
+        ? Number(r.participation[participationKey].purchases.toFixed(2))
+        : null,
+    ]);
+  });
+
+  aoa.push([
+    "TOTAL",
+    totals.sessions,
+    100,
+    totals.purchases,
+    100,
+  ]);
+
+  return aoa;
+};
+
+const buildVariationTable = (rows) => {
+  const aoa = [];
+
+  aoa.push(["VARIACIÓN DIARIA (%)"]);
+  aoa.push([]);
+
+  aoa.push(["Fecha", "Δ Sesiones %", "Δ Compras %"]);
+
+  rows.forEach((r) => {
+    aoa.push([
+      r.p2Date || r.p1Date || "—",
+      r.variation.sessions !== null
+        ? Number(r.variation.sessions.toFixed(2))
+        : null,
+      r.variation.purchases !== null
+        ? Number(r.variation.purchases.toFixed(2))
+        : null,
+    ]);
+  });
+
+  return aoa;
+};
+
+
+const exportFullReportSingleSheet = () => {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([]);
+
+  // PERIODO 1 → A1
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    buildPeriodoTable(
+      "PERIODO 1",
+      rowsWithMetrics,
+      totals.p1,
+      "p1"
+    ),
+    { origin: "A1" }
+  );
+
+  // VARIACIÓN → G1
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    buildVariationTable(rowsWithMetrics),
+    { origin: "G1" }
+  );
+
+  // PERIODO 2 → K1
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    buildPeriodoTable(
+      "PERIODO 2",
+      rowsWithMetrics,
+      totals.p2,
+      "p2"
+    ),
+    { origin: "K1" }
+  );
+
+  XLSX.utils.book_append_sheet(wb, ws, "Informe");
+
+  XLSX.writeFile(
+    wb,
+    `informe_sesiones_vs_compras_${p2Start}_a_${p2End}.xlsx`
+  );
+};
+
+
 
 
   /* =========================
@@ -364,16 +592,30 @@ const totals = useMemo(() => {
         </div>
       )}
 
-      {rows.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Table title="Periodo 1" keyName="p1" />
-          <Table
-            title="Periodo 2"
-            keyName="p2"
-            showVariation
-          />
-        </div>
-      )}
+      {rowsWithMetrics.length > 0 && (
+  <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-2 items-start">
+    <PeriodTable title="Periodo 1" keyName="p1" />
+    <VariationTable />
+    <PeriodTable title="Periodo 2" keyName="p2" />
+    <div className="flex justify-end mt-6">
+    <button
+      onClick={exportFullReportSingleSheet}
+      className="
+        px-6 py-2.5
+        rounded-lg
+        bg-emerald-600
+        text-white text-sm font-medium
+        hover:bg-emerald-700
+        transition
+      "
+    >
+      Exportar informe completo (1 hoja)
+    </button>
+  </div>
+  </div>
+  
+  
+)}
     </div>
   );
 }

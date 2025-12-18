@@ -3,6 +3,7 @@ import SesionesVsComprasComparacion from "../components/SesionesVsCompra_Compara
 import TrafficChannelSummary from "../components/traffic-chanel-summary.jsx";
 import TrafficDetailSummary from "../components/traffic_detail.jsx";
 import DateComponentsMigra from "../components/dateComponentsMigra.jsx";
+import Ga4SubcanalOwnedTable from "../components/subcanal_report.jsx";
 import { useNavigate } from "react-router-dom";
 
 export default function EmbudoMigracion() {
@@ -26,6 +27,7 @@ export default function EmbudoMigracion() {
 
       {/* 🔹 Comparación sesiones vs compras */}
       <DateComponentsMigra />
+      <Ga4SubcanalOwnedTable />
     </div>
   );
 }
