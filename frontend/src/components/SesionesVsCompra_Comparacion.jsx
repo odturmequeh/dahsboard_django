@@ -80,6 +80,75 @@ export default function SesionesVsComprasComparacion() {
     }
   };
 
+
+const descargarExcel = () => {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([]);
+
+  /* =========================
+     Helpers
+  ========================= */
+  const buildPeriodoTable = (keyName) => {
+    const header = [
+      "Fecha",
+      "Sesiones",
+      "% Part. Sesiones",
+      "Ventas",
+      "% Part. Ventas",
+      "Conversión %"
+    ];
+
+    const body = rowsWithMetrics.map((r) => {
+      const d = r[keyName];
+      const p = r.participation[keyName];
+
+      return [
+        keyName === "p1" ? r.p1Date : r.p2Date,
+        d ? d.sessions : "",
+        p.sessions !== null ? p.sessions.toFixed(1) : "",
+        d ? d.purchases : "",
+        p.purchases !== null ? p.purchases.toFixed(1) : "",
+        p.conversion !== null ? p.conversion.toFixed(1) : ""
+      ];
+    });
+
+    return [header, ...body];
+  };
+
+  const buildVariacionTable = () => {
+    const header = ["Δ Sesiones %", "Δ Ventas %"];
+
+    const body = rowsWithMetrics.map((r) => [
+      r.variation.sessions !== null ? r.variation.sessions.toFixed(1) : "",
+      r.variation.purchases !== null ? r.variation.purchases.toFixed(1) : ""
+    ]);
+
+    return [header, ...body];
+  };
+
+  /* =========================
+     Construcción layout Excel
+  ========================= */
+  const p1Table = buildPeriodoTable("p1");
+  const varTable = buildVariacionTable();
+  const p2Table = buildPeriodoTable("p2");
+
+  const startRow = 0;
+
+  XLSX.utils.sheet_add_aoa(ws, [["Periodo 1"]], { origin: { r: startRow, c: 0 } });
+  XLSX.utils.sheet_add_aoa(ws, p1Table, { origin: { r: startRow + 2, c: 0 } });
+
+  XLSX.utils.sheet_add_aoa(ws, [["Variación"]], { origin: { r: startRow, c: 8 } });
+  XLSX.utils.sheet_add_aoa(ws, varTable, { origin: { r: startRow + 2, c: 8 } });
+
+  XLSX.utils.sheet_add_aoa(ws, [["Periodo 2"]], { origin: { r: startRow, c: 12 } });
+  XLSX.utils.sheet_add_aoa(ws, p2Table, { origin: { r: startRow + 2, c: 12 } });
+
+  XLSX.utils.book_append_sheet(wb, ws, "Comparación");
+  XLSX.writeFile(wb, "sesiones_vs_compras.xlsx");
+};
+
+
   /* =========================
      Procesamiento de filas y métricas
   ========================= */
@@ -212,11 +281,19 @@ export default function SesionesVsComprasComparacion() {
       {error && <div className="text-center py-12 text-red-500">{error}</div>}
 
       {rowsWithMetrics.length > 0 && (
+        <>
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-2 items-start mt-4">
           <PeriodTable title="Periodo 1" keyName="p1" rows={rowsWithMetrics} />
           <VariationTable rows={rowsWithMetrics} />
           <PeriodTable title="Periodo 2" keyName="p2" rows={rowsWithMetrics} />
         </div>
+        <button
+      onClick={descargarExcel}
+      className="mt-6 px-4 py-2 bg-green-600 text-white rounded"
+    >
+      Descargar Excel
+    </button>
+  </>
       )}
     </div>
   );

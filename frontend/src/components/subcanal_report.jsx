@@ -171,12 +171,86 @@ export default function ComparacionSubcanalesGA4() {
      Excel
   ========================= */
   const descargarExcel = () => {
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(t1.filas), "Periodo 1");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(variacion), "Variación");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(t2.filas), "Periodo 2");
-    XLSX.writeFile(wb, "comparacion_subcanales.xlsx");
+  const wb = XLSX.utils.book_new();
+
+  // Hoja vacía
+  const ws = XLSX.utils.aoa_to_sheet([]);
+
+  /* =========================
+     Helpers
+  ========================= */
+  const buildTableFromFilas = (filas) => {
+    if (!filas?.length) return [];
+
+    const headers = Object.keys(filas[0]);
+    const body = filas.map((row) =>
+      headers.map((h) =>
+        typeof row[h] === "number" ? Number(row[h].toFixed?.(4) ?? row[h]) : row[h]
+      )
+    );
+
+    return [headers, ...body];
   };
+
+  /* =========================
+     Construir tablas
+  ========================= */
+  const tableP1 = buildTableFromFilas(t1.filas);
+  const tableVar = buildTableFromFilas(variacion);
+  const tableP2 = buildTableFromFilas(t2.filas);
+
+  /* =========================
+     Posiciones (column offsets)
+  ========================= */
+  const startRow = 0;
+
+  const colP1 = 0;     // Periodo 1
+  const colVar = 8;    // Variación (ajusta si necesitas)
+  const colP2 = 12;    // Periodo 2
+
+  /* =========================
+     Insertar en la hoja
+  ========================= */
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    [["Periodo 1"]],
+    { origin: { r: startRow, c: colP1 } }
+  );
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    tableP1,
+    { origin: { r: startRow + 2, c: colP1 } }
+  );
+
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    [["Variación"]],
+    { origin: { r: startRow, c: colVar } }
+  );
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    tableVar,
+    { origin: { r: startRow + 2, c: colVar } }
+  );
+
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    [["Periodo 2"]],
+    { origin: { r: startRow, c: colP2 } }
+  );
+  XLSX.utils.sheet_add_aoa(
+    ws,
+    tableP2,
+    { origin: { r: startRow + 2, c: colP2 } }
+  );
+
+  /* =========================
+     Finalizar
+  ========================= */
+  XLSX.utils.book_append_sheet(wb, ws, "Comparación");
+  XLSX.writeFile(wb, "comparacion_subcanales.xlsx");
+};
+
 const p1Dates = buildAlignedPeriod1Dates(
   p1Month,
   p2Start,
