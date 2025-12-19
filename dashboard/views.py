@@ -2170,15 +2170,36 @@ def ga4_migracion_view_item_list(request):
                     date_ranges=[
                         DateRange(start_date=start_date, end_date=end_date)
                     ],
-                    dimension_filter=FilterExpression(
-                        filter=Filter(
-                            field_name="eventName",
-                            string_filter={
-                                "value": event_name,
-                                "match_type": Filter.StringFilter.MatchType.EXACT,
-                            },
+                    
+                    dimension_filter = FilterExpression(
+                        and_group=FilterExpressionList(
+                            expressions=[
+                                FilterExpression(
+                                    filter=Filter(
+                                        field_name="hostName",
+                                        string_filter={"value": "tienda.claro.com.co"},
+                                    )
+                                ),
+                                FilterExpression(
+                                    filter=Filter(
+                                        field_name="customEvent:business_unit2",
+                                        string_filter={"value": "migracion"},
+                                    )
+                                ),
+                                # 👇 SOLO sesiones
+                                FilterExpression(
+                                    filter=Filter(
+                                        field_name="eventName",
+                                        string_filter={
+                                            "value": event_name,
+                                            "match_type": Filter.StringFilter.MatchType.EXACT,
+                                        },
+                                    )
+                                ),
+                            ]
                         )
                     ),
+                    
                     limit=limit,
                     offset=offset,
                 )
@@ -2402,87 +2423,139 @@ def ga4_migracion_view_alert(request):
 # ==========================================================
 # 🔹 Consulta GA4 para un rango de fechas
 # ==========================================================
-def _run_Sesiones_Vs_Compras_comparacion(
+
+def _run_sessions_view_item_list(
     client,
     property_id,
     start_date,
     end_date,
 ):
-    offset = 0
-    limit = 100000
-    daily_summary = []
-
-    dimensions = [Dimension(name="date")]
-    metrics = [
-        Metric(name="sessions"),
-        Metric(name="ecommercePurchases"),
-    ]
-
-    # 🔹 Filtro: SOLO migración
-    dimension_filter = FilterExpression(
-        filter=Filter(
-            field_name="customEvent:business_unit2",
-            string_filter=Filter.StringFilter(
-                value="migracion",
-                match_type=Filter.StringFilter.MatchType.EXACT,
-            ),
-        )
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=[Dimension(name="date")],
+        metrics=[Metric(name="sessions")],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(
+                expressions=[
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="hostName",
+                            string_filter={"value": "tienda.claro.com.co"},
+                        )
+                    ),
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="customEvent:business_unit2",
+                            string_filter={"value": "migracion"},
+                        )
+                    ),
+                    # 👇 SOLO sesiones del evento
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="eventName",
+                            string_filter={"value": "view_item_list"},
+                        )
+                    ),
+                ]
+            )
+        ),
     )
 
-    while True:
-        request = RunReportRequest(
-            property=f"properties/{property_id}",
-            dimensions=dimensions,
-            metrics=metrics,
-            date_ranges=[
-                DateRange(
-                    start_date=start_date,
-                    end_date=end_date,
-                )
-            ],
-            dimension_filter=dimension_filter,
-            limit=limit,
-            offset=offset,
+    response = client.run_report(request)
+
+    result = {}
+    for row in response.rows:
+        date = datetime.strptime(
+            row.dimension_values[0].value, "%Y%m%d"
+        ).strftime("%Y-%m-%d")
+
+        result[date] = int(row.metric_values[0].value or 0)
+
+    return result
+
+def _run_purchases_migracion(
+    client,
+    property_id,
+    start_date,
+    end_date,
+):
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=[Dimension(name="date")],
+        metrics=[Metric(name="ecommercePurchases")],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(
+                expressions=[
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="hostName",
+                            string_filter={"value": "tienda.claro.com.co"},
+                        )
+                    ),
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="customEvent:business_unit2",
+                            string_filter={"value": "migracion"},
+                        )
+                    ),
+                ]
+            )
+        ),
+    )
+
+    response = client.run_report(request)
+
+    result = {}
+    for row in response.rows:
+        date = datetime.strptime(
+            row.dimension_values[0].value, "%Y%m%d"
+        ).strftime("%Y-%m-%d")
+
+        result[date] = int(row.metric_values[0].value or 0)
+
+    return result
+
+
+def run_sesiones_vs_compras_comparacion(
+    client,
+    property_id,
+    start_date,
+    end_date,
+):
+    sessions_by_date = _run_sessions_view_item_list(
+        client, property_id, start_date, end_date
+    )
+
+    purchases_by_date = _run_purchases_migracion(
+        client, property_id, start_date, end_date
+    )
+
+    all_dates = sorted(
+        set(sessions_by_date) | set(purchases_by_date)
+    )
+
+    daily_summary = []
+
+    for date in all_dates:
+        sessions = sessions_by_date.get(date, 0)
+        purchases = purchases_by_date.get(date, 0)
+
+        conversion_rate = (
+            round((purchases / sessions) * 100, 2)
+            if sessions > 0
+            else 0
         )
 
-        response = client.run_report(request)
+        daily_summary.append({
+            "date": date,
+            "sessions": sessions,
+            "purchases": purchases,
+            "conversion_rate": conversion_rate,
+        })
 
-        if not response.rows:
-            break
-
-        for row in response.rows:
-            date_raw = row.dimension_values[0].value
-            sessions = int(row.metric_values[0].value or 0)
-            purchases = int(row.metric_values[1].value or 0)
-
-            try:
-                date_fmt = datetime.strptime(
-                    date_raw, "%Y%m%d"
-                ).strftime("%Y-%m-%d")
-            except Exception:
-                date_fmt = date_raw
-
-            conversion_rate = (
-                round((purchases / sessions) * 100, 2)
-                if sessions
-                else 0
-            )
-
-            daily_summary.append({
-                "date": date_fmt,
-                "sessions": sessions,
-                "purchases": purchases,
-                "conversion_rate": conversion_rate,
-            })
-
-        if len(response.rows) < limit:
-            break
-
-        offset += limit
-
-    daily_summary.sort(key=lambda x: x["date"])
     return daily_summary
-
 
 # ==========================================================
 # 🔹 Comparación entre dos periodos
@@ -2499,13 +2572,13 @@ def ga4_Sesiones_Vs_Compras_comparacion(
     client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
 
     return {
-        "periodo_1": _run_Sesiones_Vs_Compras_comparacion(
+        "periodo_1": run_sesiones_vs_compras_comparacion(
             client,
             property_id,
             period_1_start_date,
             period_1_end_date,
         ),
-        "periodo_2": _run_Sesiones_Vs_Compras_comparacion(
+        "periodo_2": run_sesiones_vs_compras_comparacion(
             client,
             property_id,
             period_2_start_date,
@@ -2551,9 +2624,6 @@ def sesiones_vs_compras_comparacion_view(request):
             {"error": str(e)},
             status=500,
         )
-
-
-
 
 
 # ==========================================================
@@ -2857,6 +2927,11 @@ def ga4_traffic_detail_summary_view(request):
         safe=False
     )
 
+
+# ==========================================================
+# 🔹 Sub canales
+# ==========================================================
+
 def categorizar_subcanal(source_medium, channel_group):
     sm = (source_medium or "").lower()
     cg = (channel_group or "").lower()
@@ -2909,29 +2984,16 @@ def categorizar_subcanal(source_medium, channel_group):
 
     return "Otros"
 
-
-
-def ga4_subcanal_owned_report(start_date, end_date):
-    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    property_id = os.getenv("GA4_PROPERTY_ID")
-
-    if not credentials_path or not property_id:
-        raise RuntimeError("Credenciales GA4 no configuradas")
-
-    client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
-
+def _run_ga4_sesiones_subcanal(
+    client, property_id, start_date, end_date
+):
     dimensions = [
         Dimension(name="date"),
         Dimension(name="sessionSourceMedium"),
         Dimension(name="sessionCustomChannelGroup:7566460458"),
-        Dimension(name="hostName"),
-        Dimension(name="customEvent:business_unit2"),
     ]
 
-    metrics = [
-        Metric(name="sessions"),
-        Metric(name="ecommercePurchases"),
-    ]
+    metrics = [Metric(name="sessions")]
 
     dimension_filter = FilterExpression(
         and_group=FilterExpressionList(
@@ -2948,6 +3010,13 @@ def ga4_subcanal_owned_report(start_date, end_date):
                         string_filter={"value": "migracion"},
                     )
                 ),
+                # 👇 SOLO sesiones
+                FilterExpression(
+                    filter=Filter(
+                        field_name="eventName",
+                        string_filter={"value": "view_item_list"},
+                    )
+                ),
             ]
         )
     )
@@ -2961,60 +3030,128 @@ def ga4_subcanal_owned_report(start_date, end_date):
         limit=100000,
     )
 
-    response = client.run_report(request)
+    return client.run_report(request)
 
-    # -------- PROCESAMIENTO PARA FRONTEND --------
+def _run_ga4_ventas_subcanal(
+    client, property_id, start_date, end_date
+):
+    dimensions = [
+        Dimension(name="date"),
+        Dimension(name="sessionSourceMedium"),
+        Dimension(name="sessionCustomChannelGroup:7566460458"),
+    ]
 
-    tree_data = defaultdict(
-        lambda: defaultdict(lambda: {"sesiones": 0, "ventas": 0})
+    metrics = [Metric(name="ecommercePurchases")]
+
+    dimension_filter = FilterExpression(
+        and_group=FilterExpressionList(
+            expressions=[
+                FilterExpression(
+                    filter=Filter(
+                        field_name="hostName",
+                        string_filter={"value": "tienda.claro.com.co"},
+                    )
+                ),
+                FilterExpression(
+                    filter=Filter(
+                        field_name="customEvent:business_unit2",
+                        string_filter={"value": "migracion"},
+                    )
+                ),
+                # ❌ SIN eventName
+            ]
+        )
     )
-    fechas_presentes = set()
 
-    for row in response.rows:
-        fecha_raw = row.dimension_values[0].value
-        fecha = f"{fecha_raw[:4]}-{fecha_raw[4:6]}-{fecha_raw[6:]}"
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=dimensions,
+        metrics=metrics,
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=dimension_filter,
+        limit=100000,
+    )
+
+    return client.run_report(request)
+
+def _merge_sesiones_y_ventas(resp_sesiones, resp_ventas):
+    data = defaultdict(lambda: {"sesiones": 0, "ventas": 0})
+
+    # SESIONES
+    for row in resp_sesiones.rows:
         subcanal = categorizar_subcanal(
             row.dimension_values[1].value,
             row.dimension_values[2].value,
         )
+        data[subcanal]["sesiones"] += int(row.metric_values[0].value)
 
-        sesiones = int(row.metric_values[0].value)
-        ventas = int(row.metric_values[1].value)
+    # VENTAS
+    for row in resp_ventas.rows:
+        subcanal = categorizar_subcanal(
+            row.dimension_values[1].value,
+            row.dimension_values[2].value,
+        )
+        data[subcanal]["ventas"] += int(row.metric_values[0].value)
 
-        fechas_presentes.add(fecha)
-        tree_data[subcanal][fecha]["sesiones"] += sesiones
-        tree_data[subcanal][fecha]["ventas"] += ventas
+    return [
+        {
+            "subcanal": subcanal,
+            "sesiones": valores["sesiones"],
+            "ventas": valores["ventas"],
+        }
+        for subcanal, valores in sorted(data.items())
+    ]
 
-    lista_fechas = sorted(fechas_presentes)
 
-    datos_front = []
-    for subcanal in sorted(tree_data.keys()):
-        fila = {"grupo": subcanal, "valores": {}}
-        for fecha in lista_fechas:
-            fila["valores"][fecha] = tree_data[subcanal].get(
-                fecha, {"sesiones": 0, "ventas": 0}
-            )
-        datos_front.append(fila)
+def ga4_subcanal_owned_report_comparacion(
+    p1_start, p1_end, p2_start, p2_end
+):
+    client = BetaAnalyticsDataClient.from_service_account_file(
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    def run_period(start, end):
+        sesiones = _run_ga4_sesiones_subcanal(
+            client, property_id, start, end
+        )
+        ventas = _run_ga4_ventas_subcanal(
+            client, property_id, start, end
+        )
+        return _merge_sesiones_y_ventas(sesiones, ventas)
 
     return {
-        "encabezados": {
-            "fechas": lista_fechas,
-            "metricas": ["Sesiones", "Ventas"],
-        },
-        "datos": datos_front,
+        "periodo_1": {"datos": run_period(p1_start, p1_end)},
+        "periodo_2": {"datos": run_period(p2_start, p2_end)},
     }
 
-
 @require_GET
-def ga4_subcanal_owned_view(request):
-    start_date = request.GET.get("start_date")
-    end_date = request.GET.get("end_date")
+def ga4_subcanal_owned_comparacion_view(request):
+    p1_start = request.GET.get("period_1_start")
+    p1_end = request.GET.get("period_1_end")
+    p2_start = request.GET.get("period_2_start")
+    p2_end = request.GET.get("period_2_end")
 
-    if not start_date or not end_date:
+    if not all([p1_start, p1_end, p2_start, p2_end]):
         return JsonResponse(
-            {"error": "Debe enviar start_date y end_date"},
+            {"error": "Debe enviar los 4 parámetros de fecha"},
             status=400,
         )
 
-    data = ga4_subcanal_owned_report(start_date, end_date)
-    return JsonResponse(data, safe=False)
+    data = ga4_subcanal_owned_report_comparacion(
+        p1_start, p1_end, p2_start, p2_end
+    )
+
+    # 👇 YA VIENE PLANO, SOLO RETORNA
+    return JsonResponse(
+        {
+            "periodo_1": {
+                "datos": data["periodo_1"]["datos"],
+            },
+            "periodo_2": {
+                "datos": data["periodo_2"]["datos"],
+            },
+        },
+        safe=False,
+    )
+

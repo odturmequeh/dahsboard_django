@@ -26,6 +26,7 @@ export default function DateComponentsMigra() {
         setP2Start={setP2Start}
         setP2End={setP2End}
       />
+      {/*
       <TrafficChannelSummary
         startDate={p2Start}
         endDate={p2End}
@@ -38,6 +39,7 @@ export default function DateComponentsMigra() {
         setStartDate={setP2Start}
         setEndDate={setP2End}
       />
+      */}
     </div>
   );
 }

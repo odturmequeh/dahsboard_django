@@ -38,8 +38,22 @@ export default function EmbudoMigra() {
   /* =========================
      Estados
   ========================= */
-  const [startDate, setStartDate] = useState("2025-11-01");
-  const [endDate, setEndDate] = useState("2025-11-30");
+
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  const defaultStartDate = `${today.getFullYear()}-${pad(
+    today.getMonth() + 1
+  )}-01`; // primer día del mes
+  const defaultEndDate = `${yesterday.getFullYear()}-${pad(
+    yesterday.getMonth() + 1
+  )}-${pad(yesterday.getDate())}`; // ayer
+
+  const [startDate, setStartDate] = useState(defaultStartDate);
+  const [endDate, setEndDate] = useState(defaultEndDate);
 
   const [activeSteps, setActiveSteps] = useState(["ALL"]);
   const [chartData, setChartData] = useState([]);

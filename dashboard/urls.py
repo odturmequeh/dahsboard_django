@@ -20,7 +20,7 @@ urlpatterns = [
     path('dashboard/sesiones-vs-compras-comparacion/', views.sesiones_vs_compras_comparacion_view, name='sesiones_vs_compras_comparacion'),
     path('dashboard/traffic-channel-summary/', views.traffic_channel_summary_view, name='traffic_channel_summary_view'),
     path('dashboard/ga4-traffic-detail-summary/', views.ga4_traffic_detail_summary_view, name='ga4_traffic_detail_summary_view'),
-    path('dashboard/subcanal-owned/', views.ga4_subcanal_owned_view, name="ga4_subcanal_owned"),
+    path('dashboard/ga4_subcanal_owned_view/', views.ga4_subcanal_owned_comparacion_view, name="ga4_subcanal_owned"),
 
    
 
