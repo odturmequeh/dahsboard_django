@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+
 import {
   LineChart,
   Line,
@@ -87,6 +88,81 @@ export default function EmbudoMigra() {
   /* =========================
      Fetch alertas (2° piso)
   ========================= */
+
+const getPreviousMonthSameRange = (start, end) => {
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+
+  const prevStart = new Date(startDate);
+  prevStart.setMonth(prevStart.getMonth() - 1);
+
+  const prevEnd = new Date(endDate);
+  prevEnd.setMonth(prevEnd.getMonth() - 1);
+
+  return {
+    start: prevStart.toISOString().slice(0, 10),
+    end: prevEnd.toISOString().slice(0, 10),
+    month: prevStart.toISOString().slice(0, 7), // YYYY-MM
+  };
+};
+
+
+  const defaultCompare = getPreviousMonthSameRange(
+  defaultStartDate,
+  defaultEndDate
+);
+
+
+  const [alertsCompareData, setAlertsCompareData] = useState([]);
+  const [alertsCompareLoading, setAlertsCompareLoading] = useState(false);
+
+const subtractOneMonthSafe = (date) => {
+  const d = new Date(date);
+
+  const day = d.getDate();
+  const month = d.getMonth();
+  const year = d.getFullYear();
+
+  // último día real del mes anterior
+  const lastDayPrevMonth = new Date(year, month, 0).getDate();
+
+  const safeDay = Math.min(day, lastDayPrevMonth);
+
+  return new Date(year, month - 1, safeDay);
+};
+const subtractOneMonthString = (dateStr) => {
+  const [y, m, d] = dateStr.split("-").map(Number);
+
+  let year = y;
+  let month = m - 1;
+
+  if (month === 0) {
+    month = 12;
+    year -= 1;
+  }
+
+  const lastDayPrevMonth = new Date(year, month, 0).getDate();
+  const safeDay = Math.min(d, lastDayPrevMonth);
+
+  return `${year}-${String(month).padStart(2, "0")}-${String(safeDay).padStart(2, "0")}`;
+};
+const getPreviousMonthString = (dateStr) => {
+  const [y, m] = dateStr.split("-").map(Number);
+
+  let year = y;
+  let month = m - 1;
+
+  if (month === 0) {
+    month = 12;
+    year -= 1;
+  }
+
+  return `${year}-${String(month).padStart(2, "0")}`;
+};
+
+const [compareMonth, setCompareMonth] = useState(
+  getPreviousMonthString(startDate)
+);
   useEffect(() => {
     const fetchAlerts = async () => {
       setAlertsLoading(true);
@@ -106,6 +182,49 @@ export default function EmbudoMigra() {
     fetchAlerts();
   }, [startDate, endDate]);
 
+useEffect(() => {
+  if (!compareMonth) return;
+
+  const fetchCompareAlerts = async () => {
+    setAlertsCompareLoading(true);
+
+    const start = subtractOneMonthString(startDate);
+    const end = subtractOneMonthString(endDate);
+
+    try {
+      const res = await fetch(
+        `/api/dashboard/ga4_migracion_view_alert/?start_date=${start}&end_date=${end}`
+      );
+      const data = await res.json();
+      setAlertsCompareData(data.alerts || []);
+    } catch (err) {
+      console.error("Error comparación alertas:", err);
+    } finally {
+      setAlertsCompareLoading(false);
+    }
+  };
+
+  fetchCompareAlerts();
+}, [startDate, endDate, compareMonth]);
+
+
+const alertsCompareMap = useMemo(() => {
+  const map = {};
+  alertsCompareData.forEach((a) => {
+    map[a.alert_name] = a;
+  });
+  return map;
+}, [alertsCompareData]);
+
+const totalActual = useMemo(
+  () => alertsData.reduce((a, b) => a + b.cantidad, 0),
+  [alertsData]
+);
+
+const totalCompare = useMemo(
+  () => alertsCompareData.reduce((a, b) => a + b.cantidad, 0),
+  [alertsCompareData]
+);
   /* =========================
      Tabla embudo
   ========================= */
@@ -293,6 +412,23 @@ export default function EmbudoMigra() {
       {/* =========================
    🟠 Alertas – sección independiente
 ========================= */}
+
+<div className="flex justify-center gap-4 mb-6">
+  <label className="text-sm font-medium text-gray-600">
+    Comparar con:
+  </label>
+
+  <input
+    type="month"
+    min="2025-01"
+    value={compareMonth}
+    onChange={(e) => setCompareMonth(e.target.value)}
+    className="border rounded-lg px-3 py-2 text-sm"
+  />
+</div>
+
+
+
 <div className="w-full flex justify-center mt-12">
   <div className="w-full max-w-6xl">
     <div className="bg-white rounded-2xl shadow p-10">
@@ -342,28 +478,80 @@ export default function EmbudoMigra() {
           </div>
 
           {/* 📋 Leyenda */}
-          <div className="space-y-4 max-h-[420px] overflow-y-auto pr-4">
-            {alertsData.map((alert, index) => (
-              <div
-                key={index}
-                className="flex items-start gap-4 text-sm"
-              >
-                <div
-                  className="w-4 h-4 mt-1 rounded-sm flex-shrink-0"
-                  style={{
-                    backgroundColor:
-                      ALERT_COLORS[index % ALERT_COLORS.length],
-                  }}
-                />
-                <div className="flex-1 leading-snug text-gray-700">
-                  {alert.alert_name}
-                </div>
-                <div className="text-gray-500 text-xs whitespace-nowrap">
-                  {alert.cantidad.toLocaleString()}
-                </div>
-              </div>
-            ))}
-          </div>
+          
+<div className="space-y-3 max-h-[420px] overflow-y-auto pr-4">
+<div className="flex text-xs font-semibold text-gray-500 border-b pb-3 mb-3">
+  <div className="flex-1">Totales</div>
+
+  <div className="w-20 text-right">
+    <div>Total Actual</div>
+    <div className="text-gray-800 font-bold">
+      {totalActual.toLocaleString()}
+    </div>
+  </div>
+
+  <div className="w-24 text-right">
+    <div>Total {compareMonth}</div>
+    <div className="text-gray-800 font-bold">
+      {alertsCompareLoading
+        ? "—"
+        : totalCompare.toLocaleString()}
+    </div>
+  </div>
+</div>
+
+  <div className="flex text-xs font-semibold text-gray-500 border-b pb-2">
+    <div className="flex-1">Alerta</div>
+    <div className="w-20 text-right">Actual</div>
+    <div className="w-24 text-right">
+      {compareMonth || "Comparación"}
+    </div>
+  </div>
+
+  {alertsData.map((alert, index) => {
+    const compare = alertsCompareMap[alert.alert_name];
+    const diff =
+      compare ? alert.cantidad - compare.cantidad : null;
+
+    return (
+      <div
+        key={index}
+        className="flex items-center gap-3 text-sm"
+      >
+        <div
+          className="w-3 h-3 rounded-sm"
+          style={{
+            backgroundColor:
+              ALERT_COLORS[index % ALERT_COLORS.length],
+          }}
+        />
+
+        <div className="flex-1 text-gray-700">
+          {alert.alert_name}
+        </div>
+
+        <div className="w-20 text-right">
+          {alert.cantidad.toLocaleString()}
+        </div>
+
+        <div
+          className={`w-24 text-right ${
+            diff > 0
+              ? "text-red-600"
+              : diff < 0
+              ? "text-green-600"
+              : "text-gray-400"
+          }`}
+        >
+          {compare
+            ? compare.cantidad.toLocaleString()
+            : "—"}
+        </div>
+      </div>
+    );
+  })}
+</div>
+
 
         </div>
       )}

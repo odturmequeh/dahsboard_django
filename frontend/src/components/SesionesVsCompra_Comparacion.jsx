@@ -43,6 +43,24 @@ export default function SesionesVsComprasComparacion() {
     return `${y}-${pad(m)}-${pad(last.getDate())}`;
   };
 
+  const getSameDayPrevMonth = (dateStr) => {
+  const [y, m, d] = dateStr.split("-").map(Number);
+
+  let year = y;
+  let month = m - 1;
+
+  if (month === 0) {
+    month = 12;
+    year -= 1;
+  }
+
+  const lastDayPrevMonth = new Date(year, month, 0).getDate();
+  const safeDay = Math.min(d, lastDayPrevMonth);
+
+  return `${year}-${String(month).padStart(2, "0")}-${String(safeDay).padStart(2, "0")}`;
+};
+
+
   /* =========================
      Fetch automático inicial
   ========================= */
@@ -55,30 +73,31 @@ export default function SesionesVsComprasComparacion() {
      Fetch de datos
   ========================= */
   const fetchComparison = async () => {
-    setLoading(true);
-    setData(null); // desaparece la info hasta cargar nuevos datos
-    setError(null);
+  setLoading(true);
+  setData(null);
+  setError(null);
 
-    const [y, m] = p1Month.split("-");
-    const lastDayP1 = daysInMonth(y, m);
+  try {
+    const p1Start = `${p1Month}-01`;
+    const p1End = getSameDayPrevMonth(p2End);
 
-    try {
-      const url =
-        `/api/dashboard/sesiones-vs-compras-comparacion/` +
-        `?p1_start=${p1Month}-01&p1_end=${p1Month}-${lastDayP1}` +
-        `&p2_start=${p2Start}&p2_end=${p2End}`;
+    const url =
+      `/api/dashboard/sesiones-vs-compras-comparacion/` +
+      `?p1_start=${p1Start}&p1_end=${p1End}` +
+      `&p2_start=${p2Start}&p2_end=${p2End}`;
 
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Error consultando GA4");
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Error consultando GA4");
 
-      const json = await res.json();
-      setData(json);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const json = await res.json();
+    setData(json);
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    setLoading(false);
+  }
+};
+
 
 
 const descargarExcel = () => {
@@ -125,6 +144,9 @@ const descargarExcel = () => {
 
     return [header, ...body];
   };
+
+
+
 
   /* =========================
      Construcción layout Excel
@@ -317,6 +339,61 @@ const PeriodTable = ({ title, keyName, rows }) => {
     const p = r.participation[keyName].purchases;
     return sum + (p !== null ? p : 0);
   }, 0) / rows.length;
+const WEEKDAYS_ES = [
+  "Domingo",
+  "Lunes",
+  "Martes",
+  "Miércoles",
+  "Jueves",
+  "Viernes",
+  "Sábado",
+];
+
+const getWeekdayES = (dateStr) => {
+  const d = new Date(dateStr + "T00:00:00");
+  return WEEKDAYS_ES[d.getDay()];
+};
+
+const getColombiaHolidays = (year) => {
+  const fixed = [
+    `${year}-01-01`,
+    `${year}-05-01`,
+    `${year}-07-20`,
+    `${year}-08-07`,
+    `${year}-12-08`,
+    `${year}-12-25`,
+  ];
+
+  const emiliani = [
+    `${year}-01-06`,
+    `${year}-03-19`,
+    `${year}-06-29`,
+    `${year}-08-15`,
+    `${year}-10-12`,
+    `${year}-11-01`,
+    `${year}-11-11`,
+  ];
+
+  const moveToMonday = (dateStr) => {
+    const d = new Date(dateStr + "T00:00:00");
+    const day = d.getDay();
+    if (day === 1) return dateStr;
+    const diff = (8 - day) % 7;
+    d.setDate(d.getDate() + diff);
+    return d.toISOString().slice(0, 10);
+  };
+
+  return new Set([
+    ...fixed,
+    ...emiliani.map(moveToMonday),
+  ]);
+};
+
+const isHolidayCO = (dateStr) => {
+  if (!dateStr) return false;
+  const year = Number(dateStr.slice(0, 4));
+  return getColombiaHolidays(year).has(dateStr);
+};
 
   return (
     <div className="bg-white rounded-xl shadow p-4 w-full">
@@ -351,9 +428,20 @@ const PeriodTable = ({ title, keyName, rows }) => {
           {rows.map((r, i) => {
             const d = r[keyName];
             const p = r.participation[keyName];
+            const date =
+  keyName === "p1"
+    ? r.p1Date
+    : r.p2Date;
+
             return (
-              <tr key={i} className="border-t h-9">
-                <td className="px-2">{keyName === "p1" ? r.p1Date || "—" : r.p2Date}</td>
+              <tr key={i} className={`border-t h-9 ${
+                  isHolidayCO(date) ? "bg-red-50" : ""
+                }`}>
+                <td className="px-2 text-xs">
+                  {date
+                    ? `${date} / ${getWeekdayES(date)}`
+                    : "—"}
+                </td>
                 <td className="px-2 text-right">{d ? d.sessions : "—"}</td>
                 <td className="px-2 text-right text-gray-500">{p.sessions !== null ? `${p.sessions.toFixed(1)}%` : "—"}</td>
                 <td className="px-2 text-right">{d ? d.purchases : "—"}</td>
