@@ -4,6 +4,7 @@ import TimeLoad from "./pages/TimeLoad";
 import ClickRelation from "./pages/ClickRelation";
 import GeniaHome from "./pages/GeniaHome";
 import ClickTrackingDashboard from "./pages/ClickTrackingDashboard";
+import User_click_render from "./pages/User_click_metrics";
 
 function App() {
   return (
@@ -17,6 +18,8 @@ function App() {
         <Route path="/click_relation" element={<ClickRelation />} />
         <Route path="/genia" element={<GeniaHome />} />
         <Route path="/click_tracking" element={<ClickTrackingDashboard />} />
+        {/*<Route path="/user_click_analysis" element={<User_click_render />} />*/}
+        
       </Routes>
     </Router>
   );

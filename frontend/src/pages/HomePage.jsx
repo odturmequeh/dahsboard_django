@@ -42,6 +42,13 @@ export default function HomePage() {
         >
           Migración Dashboard
         </button>
+
+         {/*<button
+          onClick={() => navigate("/user_click_analysis")}
+          className="px-8 py-4 bg-gradient-to-r from-green-500 to-green-400 text-white rounded-xl shadow-lg hover:from-green-600 hover:to-green-500 transition-all text-lg font-semibold"
+        >
+          Analisis Clicks Components
+        </button>*/}
       </div>
 
       {/* Footer */}
