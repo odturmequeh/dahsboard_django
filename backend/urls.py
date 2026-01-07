@@ -21,5 +21,6 @@ from . import views
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('dashboard.urls')),
+    path('api/pospago/', include('dashboard.urls_pospago')),
     path("", views.home, name="home"),
 ]

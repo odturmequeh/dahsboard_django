@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path,include
 from . import views
 
 urlpatterns = [
@@ -15,7 +15,7 @@ urlpatterns = [
     path('dashboard/resources/general/', views.ga4_resources_general, name='ga4_resources_general'),
     path('dashboard/resources/hourly/', views.ga4_resources_hourly, name='ga4_resources_hourly'),
     path('dashboard/resources/daily/', views.ga4_resources_daily, name='ga4_resources_daily'),
-
+    path('api/pospago/', include('dashboard.urls_pospago')),
    
 
 ]

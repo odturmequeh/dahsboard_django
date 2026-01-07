@@ -35,6 +35,12 @@ export default function HomePage() {
         >
           Genia Dashboard
         </button>
+        <button
+          onClick={() => navigate("/PosPago")}
+          className="px-8 py-4 bg-gradient-to-r from-red-600 to-orange-400 text-white rounded-xl shadow-lg hover:from-red-600 hover:to-orange-500 transition-all text-lg font-semibold"
+        >
+          PosPago Dashboard
+        </button>
       </div>
 
       {/* Footer */}
