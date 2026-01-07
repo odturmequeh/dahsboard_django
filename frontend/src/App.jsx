@@ -17,7 +17,7 @@ function App() {
         <Route path="/genia" element={<GeniaHome />} />
         <Route path="/PosPago" element={<PosPago />} />
         <Route path="/click_tracking" element={<ClickTrackingDashboard />} />
-        {/*<Route path="/user_click_analysis" element={<User_click_render />} />*/}
+        <Route path="/user_click_analysis" element={<User_click_render />} />
       </Routes>
     </Router>
   );
