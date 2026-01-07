@@ -1,5 +1,10 @@
 {
   "dependencies": {
-    "react-router-dom": "^7.9.6"
+    "axios": "^1.13.2",
+    "dayjs": "^1.11.19",
+    "dotenv": "^17.2.3",
+    "mssql": "^12.2.0",
+    "react-router-dom": "^7.9.6",
+    "xlsx": "^0.18.5"
   }
 }
