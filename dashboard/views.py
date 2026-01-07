@@ -3,11 +3,15 @@ from datetime import datetime, timedelta
 import os
 from django.http import JsonResponse
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
-from google.analytics.data_v1beta.types import DateRange, Metric, Dimension, RunReportRequest, FilterExpression, Filter
+from google.analytics.data_v1beta.types import DateRange, Metric, Dimension, RunReportRequest, FilterExpression, Filter, FilterExpressionList
 from urllib.parse import urlparse
 from django.views.decorators.csrf import csrf_exempt
 from collections import defaultdict
-
+import json
+from django.views.decorators.http import require_GET
+import re
+from django.core.cache import cache
+from time import time
 
 
 def ga4_dashboard_metrics(request):
@@ -2057,5 +2061,1294 @@ def ga4_genia_ingresos_por_dia(request):
         import traceback
         print(traceback.format_exc())
         return JsonResponse({"error": str(e)}, status=500)
+
+
+
+@csrf_exempt
+def ga4_migracion_view_item_list(request):
+
+    """
+    Embudo Migración – eCommerce móviles
+
+    Retorna:
+    {
+      "series": [
+        {
+          "date": "YYYY-MM-DD",
+          "Visualización de planes": int,
+          "Clic en comprar": int,
+          "Datos personales": int,
+          "Aceptación T&C": int,
+          "Botón continuar": int,
+          "Resumen de compra": int
+        }
+      ]
+    }
+    """
+
+    try:
+        # -------------------
+        # Credenciales
+        # -------------------
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        property_id = os.getenv("GA4_PROPERTY_ID")
+
+        if not credentials_path or not property_id:
+            return JsonResponse(
+                {"error": "Credenciales GA4 no configuradas"},
+                status=500
+            )
+
+        client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+        # -------------------
+        # Fechas (querystring)
+        # -------------------
+        start_date = request.GET.get("start_date") or (
+            datetime.today() - timedelta(days=28)
+        ).strftime("%Y-%m-%d")
+
+        end_date = request.GET.get("end_date") or datetime.today().strftime("%Y-%m-%d")
+
+        # -------------------
+        # Configuración embudo
+        # ⚠️ Labels alineados con el FRONT
+        # -------------------
+        FUNNEL_EVENTS = {
+            "view_item_list": "Visualización de planes",
+            "select_item": "Clic en comprar",
+            "begin_checkout": "Datos personales",
+            "select_tyc": "Aceptación T&C",
+            "select_next_step": "Botón continuar",
+            "purchase": "Resumen de compra",
+        }
+
+        resultados_por_dia = defaultdict(lambda: {
+            "Visualización de planes": 0,
+            "Clic en comprar": 0,
+            "Datos personales": 0,
+            "Aceptación T&C": 0,
+            "Botón continuar": 0,
+            "Resumen de compra": 0,
+        })
+
+        # -------------------
+        # Query GA4 por evento
+        # -------------------
+        for event_name, label in FUNNEL_EVENTS.items():
+            offset = 0
+            limit = 100000
+
+            while True:
+                ga_request = RunReportRequest(
+                    property=f"properties/{property_id}",
+                    dimensions=[
+                        Dimension(name="date"),
+                        Dimension(name="customEvent:business_unit2"),
+                    ],
+                    metrics=[
+                        Metric(name="sessions"),
+                    ],
+                    date_ranges=[
+                        DateRange(start_date=start_date, end_date=end_date)
+                    ],
+                    
+                    dimension_filter = FilterExpression(
+                        and_group=FilterExpressionList(
+                            expressions=[
+                                #FilterExpression(
+                                #    filter=Filter(
+                                #        field_name="hostName",
+                                #        string_filter={"value": "tienda.claro.com.co"},
+                                #    )
+                                #),
+                                FilterExpression(
+                                    filter=Filter(
+                                        field_name="customEvent:business_unit2",
+                                        string_filter={"value": "migracion"},
+                                    )
+                                ),
+                                # 👇 SOLO sesiones
+                                FilterExpression(
+                                    filter=Filter(
+                                        field_name="eventName",
+                                        string_filter={
+                                            "value": event_name,
+                                            "match_type": Filter.StringFilter.MatchType.EXACT,
+                                        },
+                                    )
+                                ),
+                            ]
+                        )
+                    ),
+                    
+                    limit=limit,
+                    offset=offset,
+                )
+
+                response = client.run_report(ga_request)
+
+                if not response.rows:
+                    break
+
+                for row in response.rows:
+                    date_raw = row.dimension_values[0].value
+                    business_unit2 = row.dimension_values[1].value
+                    count = int(row.metric_values[0].value or 0)
+
+                    # 🔎 Filtro clave del embudo
+                    if business_unit2 != "migracion":
+                        continue
+
+                    try:
+                        date_fmt = datetime.strptime(
+                            date_raw, "%Y%m%d"
+                        ).strftime("%Y-%m-%d")
+                    except Exception:
+                        date_fmt = date_raw
+
+                    resultados_por_dia[date_fmt][label] += count
+
+                if len(response.rows) < limit:
+                    break
+
+                offset += limit
+
+        # -------------------
+        # Formato final frontend
+        # -------------------
+        series = [
+            {
+                "date": d,
+                "Visualización de planes": resultados_por_dia[d]["Visualización de planes"],
+                "Clic en comprar": resultados_por_dia[d]["Clic en comprar"],
+                "Datos personales": resultados_por_dia[d]["Datos personales"],
+                "Aceptación T&C": resultados_por_dia[d]["Aceptación T&C"],
+                "Botón continuar": resultados_por_dia[d]["Botón continuar"],
+                "Resumen de compra": resultados_por_dia[d]["Resumen de compra"],
+            }
+            for d in sorted(resultados_por_dia.keys())
+        ]
+
+        return JsonResponse({"series": series})
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return JsonResponse({"error": str(e)}, status=500)
+    
+
+
+@csrf_exempt
+def ga4_migracion_view_alert(request):
+    """
+    Alertas vistas – Migración
+
+    Retorna:
+    {
+      "alerts": [
+        {
+          "alert_name": str,
+          "cantidad": int,
+          "porcentaje": float
+        }
+      ],
+      "total": int
+    }
+    """
+
+    try:
+        # -------------------
+        # Credenciales
+        # -------------------
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        property_id = os.getenv("GA4_PROPERTY_ID")
+
+        if not credentials_path or not property_id:
+            return JsonResponse(
+                {"error": "Credenciales GA4 no configuradas"}, status=500
+            )
+
+        client = BetaAnalyticsDataClient.from_service_account_file(
+            credentials_path
+        )
+
+        # -------------------
+        # Fechas
+        # -------------------
+        start_date = request.GET.get("start_date") or (
+            datetime.today() - timedelta(days=28)
+        ).strftime("%Y-%m-%d")
+
+        end_date = request.GET.get("end_date") or datetime.today().strftime(
+            "%Y-%m-%d"
+        )
+
+        # -------------------
+        # Filtros
+        # -------------------
+        filter_event_name = FilterExpression(
+            filter=Filter(
+                field_name="eventName",
+                string_filter={
+                    "value": "view_alert",
+                    "match_type": Filter.StringFilter.MatchType.EXACT,
+                },
+            )
+        )
+
+        filter_business_unit = FilterExpression(
+            filter=Filter(
+                field_name="customEvent:business_unit2",
+                string_filter={
+                    "value": "migracion",
+                    "match_type": Filter.StringFilter.MatchType.EXACT,
+                },
+            )
+        )
+
+        dimension_filter = FilterExpression(
+            and_group={
+                "expressions": [
+                    filter_event_name,
+                    filter_business_unit,
+                ]
+            }
+        )
+
+        # -------------------
+        # Query GA4
+        # -------------------
+        offset = 0
+        limit = 100000
+        alerts_acumuladas = {}
+        total_event_count = 0
+
+        while True:
+            ga_request = RunReportRequest(
+                property=f"properties/{property_id}",
+                dimensions=[
+                    Dimension(name="customEvent:alert_name"),
+                ],
+                metrics=[
+                    Metric(name="eventCount"),
+                ],
+                date_ranges=[
+                    DateRange(
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                ],
+                dimension_filter=dimension_filter,
+                limit=limit,
+                offset=offset,
+            )
+
+            response = client.run_report(ga_request)
+
+            if not response.rows:
+                break
+
+            for row in response.rows:
+                alert_name = (
+                    row.dimension_values[0].value
+                    if row.dimension_values
+                    else "(sin nombre)"
+                )
+                count = int(row.metric_values[0].value or 0)
+
+                total_event_count += count
+
+                alerts_acumuladas[alert_name] = (
+                    alerts_acumuladas.get(alert_name, 0) + count
+                )
+
+            if len(response.rows) < limit:
+                break
+
+            offset += limit
+
+        # -------------------
+        # Formato final
+        # -------------------
+        results = []
+        for alert_name, cantidad in alerts_acumuladas.items():
+            porcentaje = (
+                (cantidad / total_event_count) * 100
+                if total_event_count > 0
+                else 0
+            )
+
+            results.append({
+                "alert_name": alert_name,
+                "cantidad": cantidad,
+                "porcentaje": round(porcentaje, 2),
+            })
+
+        results.sort(key=lambda x: x["cantidad"], reverse=True)
+
+        return JsonResponse({
+            "total": total_event_count,
+            "alerts": results,
+        })
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return JsonResponse(
+            {"error": str(e)},
+            status=500
+        )
+
+
+
+# ==========================================================
+# 🔹 Consulta GA4 para un rango de fechas
+# ==========================================================
+
+def _run_sessions_view_item_list(
+    client,
+    property_id,
+    start_date,
+    end_date,
+):
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=[Dimension(name="date")],
+        metrics=[Metric(name="sessions")],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(
+                expressions=[
+                    #FilterExpression(
+                    #    filter=Filter(
+                    #        field_name="hostName",
+                    #        string_filter={"value": "tienda.claro.com.co"},
+                    #    )
+                    #),
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="customEvent:business_unit2",
+                            string_filter={"value": "migracion"},
+                        )
+                    ),
+                    # 👇 SOLO sesiones del evento
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="eventName",
+                            string_filter={"value": "view_item_list"},
+                        )
+                    ),
+                ]
+            )
+        ),
+    )
+
+    response = client.run_report(request)
+
+    result = {}
+    for row in response.rows:
+        date = datetime.strptime(
+            row.dimension_values[0].value, "%Y%m%d"
+        ).strftime("%Y-%m-%d")
+
+        result[date] = int(row.metric_values[0].value or 0)
+
+    return result
+
+def _run_purchases_migracion(
+    client,
+    property_id,
+    start_date,
+    end_date,
+):
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=[Dimension(name="date")],
+        metrics=[Metric(name="ecommercePurchases")],
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(
+                expressions=[
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="hostName",
+                            string_filter={"value": "tienda.claro.com.co"},
+                        )
+                    ),
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="customEvent:business_unit2",
+                            string_filter={"value": "migracion"},
+                        )
+                    ),
+                ]
+            )
+        ),
+    )
+
+    response = client.run_report(request)
+
+    result = {}
+    for row in response.rows:
+        date = datetime.strptime(
+            row.dimension_values[0].value, "%Y%m%d"
+        ).strftime("%Y-%m-%d")
+
+        result[date] = int(row.metric_values[0].value or 0)
+
+    return result
+
+
+def run_sesiones_vs_compras_comparacion(
+    client,
+    property_id,
+    start_date,
+    end_date,
+):
+    sessions_by_date = _run_sessions_view_item_list(
+        client, property_id, start_date, end_date
+    )
+
+    purchases_by_date = _run_purchases_migracion(
+        client, property_id, start_date, end_date
+    )
+
+    all_dates = sorted(
+        set(sessions_by_date) | set(purchases_by_date)
+    )
+
+    daily_summary = []
+
+    for date in all_dates:
+        sessions = sessions_by_date.get(date, 0)
+        purchases = purchases_by_date.get(date, 0)
+
+        conversion_rate = (
+            round((purchases / sessions) * 100, 2)
+            if sessions > 0
+            else 0
+        )
+
+        daily_summary.append({
+            "date": date,
+            "sessions": sessions,
+            "purchases": purchases,
+            "conversion_rate": conversion_rate,
+        })
+
+    return daily_summary
+
+# ==========================================================
+# 🔹 Comparación entre dos periodos
+# ==========================================================
+def ga4_Sesiones_Vs_Compras_comparacion(
+    period_1_start_date,
+    period_1_end_date,
+    period_2_start_date,
+    period_2_end_date,
+):
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+    return {
+        "periodo_1": run_sesiones_vs_compras_comparacion(
+            client,
+            property_id,
+            period_1_start_date,
+            period_1_end_date,
+        ),
+        "periodo_2": run_sesiones_vs_compras_comparacion(
+            client,
+            property_id,
+            period_2_start_date,
+            period_2_end_date,
+        ),
+    }
+
+
+# ==========================================================
+# 🔹 View Django (API)
+# ==========================================================
+@require_GET
+def sesiones_vs_compras_comparacion_view(request):
+    p1_start = request.GET.get("p1_start")
+    p1_end = request.GET.get("p1_end")
+    p2_start = request.GET.get("p2_start")
+    p2_end = request.GET.get("p2_end")
+
+    if not all([p1_start, p1_end, p2_start, p2_end]):
+        return JsonResponse(
+            {
+                "error": (
+                    "Parámetros requeridos: "
+                    "p1_start, p1_end, p2_start, p2_end"
+                )
+            },
+            status=400,
+        )
+
+    try:
+        data = ga4_Sesiones_Vs_Compras_comparacion(
+            p1_start,
+            p1_end,
+            p2_start,
+            p2_end,
+        )
+        return JsonResponse(data, safe=False)
+
+    except Exception as e:
+        # 🔥 Log explícito (NO ocultar)
+        print("ERROR GA4:", str(e))
+        return JsonResponse(
+            {"error": str(e)},
+            status=500,
+        )
+
+
+# ==========================================================
+# 🔹 Reporte por canal (L1 o L2)
+# ==========================================================
+def _run_channel_report(
+    client,
+    property_id,
+    start_date,
+    end_date,
+    channel_dimension_name,
+):
+    offset = 0
+    limit = 100000
+    report_data = []
+
+    dimensions = [
+        Dimension(name=channel_dimension_name),
+    ]
+
+    metrics = [
+        Metric(name="sessions"),
+        Metric(name="ecommercePurchases"),
+    ]
+
+    # 🔹 business_unit2 == migracion
+    filter_bu = FilterExpression(
+        filter=Filter(
+            field_name="customEvent:business_unit2",
+            string_filter=Filter.StringFilter(
+                value="migracion",
+                match_type=Filter.StringFilter.MatchType.EXACT,
+            ),
+        )
+    )
+
+    # 🔹 Excluir "(not set)" y "(other)"
+    filter_exclusion = FilterExpression(
+        not_expression=FilterExpression(
+            or_group=FilterExpressionList(
+                expressions=[
+                    FilterExpression(
+                        filter=Filter(
+                            field_name=channel_dimension_name,
+                            string_filter=Filter.StringFilter(
+                                value="(not set)",
+                                match_type=Filter.StringFilter.MatchType.EXACT,
+                            ),
+                        )
+                    ),
+                    FilterExpression(
+                        filter=Filter(
+                            field_name=channel_dimension_name,
+                            string_filter=Filter.StringFilter(
+                                value="(other)",
+                                match_type=Filter.StringFilter.MatchType.EXACT,
+                            ),
+                        )
+                    ),
+                ]
+            )
+        )
+    )
+
+    # 🔹 AND entre filtros
+    dimension_filter = FilterExpression(
+        and_group=FilterExpressionList(
+            expressions=[filter_bu, filter_exclusion]
+        )
+    )
+
+    while True:
+        request = RunReportRequest(
+            property=f"properties/{property_id}",
+            dimensions=dimensions,
+            metrics=metrics,
+            date_ranges=[
+                DateRange(
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            ],
+            dimension_filter=dimension_filter,
+            limit=limit,
+            offset=offset,
+        )
+
+        response = client.run_report(request)
+
+        if not response.rows:
+            break
+
+        for row in response.rows:
+            report_data.append({
+                "Canal": row.dimension_values[0].value,
+                "Sesiones Mig": int(row.metric_values[0].value or 0),
+                "Artículos comprados": int(row.metric_values[1].value or 0),
+            })
+
+        if len(response.rows) < limit:
+            break
+
+        offset += limit
+
+    return report_data
+
+
+# ==========================================================
+# 🔹 Resumen de Canales (L1 + L2)
+# ==========================================================
+def ga4_traffic_channel_summary(start_date, end_date):
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    if not credentials_path or not property_id:
+        raise RuntimeError("Credenciales GA4 no configuradas")
+
+    client = BetaAnalyticsDataClient.from_service_account_file(credentials_path)
+
+    # 🔹 Canales principales (L1)
+    l1_results = _run_channel_report(
+        client,
+        property_id,
+        start_date,
+        end_date,
+        "sessionCustomChannelGroup:7566460458",
+    )
+
+    for row in l1_results:
+        row["Tipo de Canal"] = "principal"
+
+    # 🔹 Canales secundarios (L2)
+    l2_results = _run_channel_report(
+        client,
+        property_id,
+        start_date,
+        end_date,
+        "sessionCustomChannelGroup:8278048377",
+    )
+
+    for row in l2_results:
+        row["Tipo de Canal"] = "secundario"
+
+    combined = l1_results + l2_results
+
+    # 🔹 Calcular Tasa de Conversión
+    for row in combined:
+        s = row["Sesiones Mig"]
+        p = row["Artículos comprados"]
+        row["Tasa de Conversión"] = round((p / s) * 100, 2) if s else 0
+
+    return {
+        "canales": combined
+    }
+
+
+# ==========================================================
+# 🔹 View Django (API)
+# ==========================================================
+@require_GET
+def traffic_channel_summary_view(request):
+    start_date = request.GET.get("start_date")
+    end_date = request.GET.get("end_date")
+
+    if not start_date or not end_date:
+        return JsonResponse(
+            {"error": "Parámetros requeridos: start_date, end_date"},
+            status=400,
+        )
+
+    try:
+        data = ga4_traffic_channel_summary(start_date, end_date)
+        return JsonResponse(data, safe=False)
+
+    except Exception as e:
+        print("ERROR GA4 CHANNELS:", str(e))
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+
+@require_GET
+def ga4_traffic_detail_summary_view(request):
+    """
+    Endpoint Django:
+    Retorna detalle de tráfico GA4 (Canal L1, Fuente/Medio, Campaña)
+    filtrado por migración.
+
+    Query params requeridos:
+    - start_date (YYYY-MM-DD)
+    - end_date   (YYYY-MM-DD)
+    """
+
+    start_date = request.GET.get("start_date")
+    end_date = request.GET.get("end_date")
+
+    if not start_date or not end_date:
+        return JsonResponse(
+            {"error": "start_date y end_date son obligatorios"},
+            status=400
+        )
+
+    # -------------------
+    # Credenciales GA4
+    # -------------------
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    if not credentials_path or not property_id:
+        return JsonResponse(
+            {"error": "Credenciales GA4 no configuradas"},
+            status=500
+        )
+
+    client = BetaAnalyticsDataClient.from_service_account_file(
+        credentials_path
+    )
+
+    # -------------------
+    # Configuración consulta
+    # -------------------
+    offset = 0
+    limit = 100000
+    results = []
+
+    dimensions = [
+        Dimension(name="sessionCustomChannelGroup:7566460458"),  # Canal L1
+        Dimension(name="sessionSourceMedium"),                   # Fuente/Medio
+        Dimension(name="sessionCampaignName"),                   # Campaña
+    ]
+
+    metrics = [
+        Metric(name="sessions"),
+        Metric(name="ecommercePurchases"),
+    ]
+
+    dimension_filter = FilterExpression(
+        filter=Filter(
+            field_name="customEvent:business_unit2",
+            string_filter=Filter.StringFilter(
+                value="migracion",
+                match_type=Filter.StringFilter.MatchType.EXACT,
+            ),
+        )
+    )
+
+    # -------------------
+    # Paginación GA4
+    # -------------------
+    while True:
+        ga_request = RunReportRequest(
+            property=f"properties/{property_id}",
+            dimensions=dimensions,
+            metrics=metrics,
+            date_ranges=[
+                DateRange(start_date=start_date, end_date=end_date)
+            ],
+            dimension_filter=dimension_filter,
+            limit=limit,
+            offset=offset,
+        )
+
+        response = client.run_report(ga_request)
+
+        if not response.rows:
+            break
+
+        for row in response.rows:
+            channel_l1 = row.dimension_values[0].value
+            source_medium = row.dimension_values[1].value
+            campaign = row.dimension_values[2].value
+
+            sessions = int(row.metric_values[0].value or 0)
+            purchases = int(row.metric_values[1].value or 0)
+
+            conversion_rate = (
+                round((purchases / sessions) * 100, 2)
+                if sessions > 0 else 0.0
+            )
+
+            results.append({
+                "Canal L1": channel_l1,
+                "Fuente/Medio": source_medium,
+                "Campaña": campaign,
+                "Sesiones Mig": sessions,
+                "Artículos comprados": purchases,
+                "Tasa de Conversión": conversion_rate,
+            })
+
+        if len(response.rows) < limit:
+            break
+
+        offset += limit
+
+    return JsonResponse(
+        {
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_filas": len(results),
+            "data": results,
+        },
+        safe=False
+    )
+
+
+# ==========================================================
+# 🔹 Sub canales
+# ==========================================================
+
+def categorizar_subcanal(source_medium, channel_group):
+    sm = (source_medium or "").lower()
+    cg = (channel_group or "").lower()
+
+    # 1. Claro Colombia
+    if sm == "clarocolombia / referral":
+        return "Claro Colombia"
+
+    # 2. IBM
+    if "ibm" in sm.split(" / ")[0]:
+        return "IBM"
+
+    # 3. SuperApp
+    superapp_regex = (
+        r"superapp / app|app / superapp|mi-claro / app|"
+        r"app / appmiclaro|app / notification_push"
+    )
+    if re.search(superapp_regex, sm):
+        return "SuperApp"
+
+    # 4. Growth
+    growth_patterns = [
+        "growth", "sms", "claro / sms", "rcs", "boton", "notification-push",
+        "owned_rcs", "email", "salesforce", "appcotaimox", "claro-pay",
+        "sfmc", "marketing-cloud", "owned_inapp", "propio",
+        "campaign", "inapp"
+    ]
+    if any(p in sm for p in growth_patterns) or "(not set)" in sm or "banner" in sm:
+        return "Growth"
+
+    # 5. Insider
+    if "insiders / web_push" in sm or "insider / web_push" in sm:
+        return "Insider"
+
+    # 6. Directo
+    if "direct" in sm:
+        return "Directo"
+
+    # 7. Orgánico
+    if cg == "organic":
+        return "Orgánico"
+
+    # 8. Pauta
+    if cg == "paid":
+        return "Pauta"
+
+    # 9. Unassigned
+    if cg == "unassigned":
+        return "Unassigned"
+
+    return "Otros"
+
+def _run_ga4_sesiones_subcanal(
+    client, property_id, start_date, end_date
+):
+    dimensions = [
+        Dimension(name="date"),
+        Dimension(name="sessionSourceMedium"),
+        Dimension(name="sessionCustomChannelGroup:7566460458"),
+    ]
+
+    metrics = [Metric(name="sessions")]
+
+    dimension_filter = FilterExpression(
+        and_group=FilterExpressionList(
+            expressions=[
+                #FilterExpression(
+                #    filter=Filter(
+                #        field_name="hostName",
+                #        string_filter={"value": "tienda.claro.com.co"},
+                #    )
+                #),
+                FilterExpression(
+                    filter=Filter(
+                        field_name="customEvent:business_unit2",
+                        string_filter={"value": "migracion"},
+                    )
+                ),
+                # 👇 SOLO sesiones
+                FilterExpression(
+                    filter=Filter(
+                        field_name="eventName",
+                        string_filter={"value": "view_item_list"},
+                    )
+                ),
+            ]
+        )
+    )
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=dimensions,
+        metrics=metrics,
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=dimension_filter,
+        limit=100000,
+    )
+
+    return client.run_report(request)
+
+def _run_ga4_ventas_subcanal(
+    client, property_id, start_date, end_date
+):
+    dimensions = [
+        Dimension(name="date"),
+        Dimension(name="sessionSourceMedium"),
+        Dimension(name="sessionCustomChannelGroup:7566460458"),
+    ]
+
+    metrics = [Metric(name="ecommercePurchases")]
+
+    dimension_filter = FilterExpression(
+        and_group=FilterExpressionList(
+            expressions=[
+                #FilterExpression(
+                #    filter=Filter(
+                #        field_name="hostName",
+                #        string_filter={"value": "tienda.claro.com.co"},
+                #    )
+                #),
+                FilterExpression(
+                    filter=Filter(
+                        field_name="customEvent:business_unit2",
+                        string_filter={"value": "migracion"},
+                    )
+                ),
+                # ❌ SIN eventName
+            ]
+        )
+    )
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=dimensions,
+        metrics=metrics,
+        date_ranges=[DateRange(start_date=start_date, end_date=end_date)],
+        dimension_filter=dimension_filter,
+        limit=100000,
+    )
+
+    return client.run_report(request)
+
+def _merge_sesiones_y_ventas(resp_sesiones, resp_ventas):
+    data = defaultdict(lambda: {"sesiones": 0, "ventas": 0})
+
+    # SESIONES
+    for row in resp_sesiones.rows:
+        subcanal = categorizar_subcanal(
+            row.dimension_values[1].value,
+            row.dimension_values[2].value,
+        )
+        data[subcanal]["sesiones"] += int(row.metric_values[0].value)
+
+    # VENTAS
+    for row in resp_ventas.rows:
+        subcanal = categorizar_subcanal(
+            row.dimension_values[1].value,
+            row.dimension_values[2].value,
+        )
+        data[subcanal]["ventas"] += int(row.metric_values[0].value)
+
+    return [
+        {
+            "subcanal": subcanal,
+            "sesiones": valores["sesiones"],
+            "ventas": valores["ventas"],
+        }
+        for subcanal, valores in sorted(data.items())
+    ]
+
+
+def ga4_subcanal_owned_report_comparacion(
+    p1_start, p1_end, p2_start, p2_end
+):
+    client = BetaAnalyticsDataClient.from_service_account_file(
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    def run_period(start, end):
+        sesiones = _run_ga4_sesiones_subcanal(
+            client, property_id, start, end
+        )
+        ventas = _run_ga4_ventas_subcanal(
+            client, property_id, start, end
+        )
+        return _merge_sesiones_y_ventas(sesiones, ventas)
+
+    return {
+        "periodo_1": {"datos": run_period(p1_start, p1_end)},
+        "periodo_2": {"datos": run_period(p2_start, p2_end)},
+    }
+
+@require_GET
+def ga4_subcanal_owned_comparacion_view(request):
+    p1_start = request.GET.get("period_1_start")
+    p1_end = request.GET.get("period_1_end")
+    p2_start = request.GET.get("period_2_start")
+    p2_end = request.GET.get("period_2_end")
+
+    if not all([p1_start, p1_end, p2_start, p2_end]):
+        return JsonResponse(
+            {"error": "Debe enviar los 4 parámetros de fecha"},
+            status=400,
+        )
+
+    data = ga4_subcanal_owned_report_comparacion(
+        p1_start, p1_end, p2_start, p2_end
+    )
+
+    # 👇 YA VIENE PLANO, SOLO RETORNA
+    return JsonResponse(
+        {
+            "periodo_1": {
+                "datos": data["periodo_1"]["datos"],
+            },
+            "periodo_2": {
+                "datos": data["periodo_2"]["datos"],
+            },
+        },
+        safe=False,
+    )
+
+
+
+
+# views.py
+def analysis_status(request):
+    """
+    Devuelve si hay un nuevo elemento seleccionado
+    """
+    last_click = cache.get("LAST_USER_CLICK")  # o DB / variable global
+
+    if not last_click:
+        return JsonResponse({"ready": False})
+
+    return JsonResponse({
+        "ready": True,
+        "user_click": last_click
+    })
+
+
+
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+from django.core.cache import cache
+import json
+
+
+@csrf_exempt
+def element_select(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    token_body = data.get("analysis_token")
+    token_query = request.GET.get("__analyze")
+
+    if token_body != token_query:
+        return JsonResponse({"error": "Invalid token"}, status=403)
+
+    user_click = data.get("element", {}).get("user_click")
+
+    if not user_click:
+        return JsonResponse({"error": "Missing user_click"}, status=400)
+
+    event = {
+        "user_click": user_click,
+        "ts": int(time())
+    }
+
+    cache.set("LAST_ANALYSIS_EVENT", event, timeout=600)
+
+    print("📊 CACHE SET:", event)
+
+    return JsonResponse({"status": "ok"})
+
+
+def analysis_status(request):
+    event = cache.get("LAST_ANALYSIS_EVENT")
+
+    print("🔍 CACHE GET:", event)
+
+    if not event:
+        return JsonResponse({"ready": False})
+
+    return JsonResponse({
+        "ready": True,
+        "user_click": event["user_click"],
+        "event_ts": event["ts"]
+    })
+
+def ga4_user_click_metrics(user_click):
+    client = BetaAnalyticsDataClient.from_service_account_file(
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        date_ranges=[DateRange(start_date="2025-12-15", end_date="2025-12-28")],
+        dimensions=[
+            Dimension(name="customEvent:user_click"),
+            Dimension(name="customEvent:session_id_final"),
+        ],
+        metrics=[
+            Metric(name="eventCount"),
+            Metric(name="sessions"),
+        ],
+        dimension_filter=FilterExpression(
+            filter=Filter(
+                field_name="customEvent:user_click",
+                string_filter=Filter.StringFilter(
+                    value=user_click,
+                    match_type=Filter.StringFilter.MatchType.EXACT
+                )
+            )
+        ),
+    )
+
+    response = client.run_report(request)
+
+    sessions = set()
+    total_events = 0
+
+    for row in response.rows:
+        sessions.add(row.dimension_values[1].value)
+        total_events += int(row.metric_values[0].value)
+
+    return {
+        "sessions_count": len(sessions),
+        "events_count": total_events,
+        "session_ids": list(sessions),
+    }
+
+
+def ga4_sessions_with_purchase(session_ids):
+    if not session_ids:
+        return 0
+
+    client = BetaAnalyticsDataClient.from_service_account_file(
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
+        dimensions=[
+            Dimension(name="customEvent:session_id_final"),
+        ],
+        metrics=[Metric(name="eventCount")],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(
+                expressions=[
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="eventName",
+                            string_filter=Filter.StringFilter(
+                                value="purchase",
+                                match_type=Filter.StringFilter.MatchType.EXACT
+                            ),
+                        )
+                    ),
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="customEvent:session_id_final",
+                            in_list_filter=Filter.InListFilter(
+                                values=session_ids
+                            ),
+                        )
+                    ),
+                ]
+            )
+        ),
+    )
+
+    response = client.run_report(request)
+
+    purchase_sessions = {
+        row.dimension_values[0].value for row in response.rows
+    }
+
+    return len(purchase_sessions)
+
+
+def ga4_user_click_conversion_summary(user_click):
+    base_metrics = ga4_user_click_metrics(user_click)
+
+    purchase_sessions_count = ga4_sessions_with_purchase(
+        base_metrics["session_ids"]
+    )
+
+    return {
+        "user_click": user_click,
+        "sessions": base_metrics["sessions_count"],
+        "events": base_metrics["events_count"],
+        "sessions_with_purchase": purchase_sessions_count,
+        "conversion_rate": (
+            round(
+                purchase_sessions_count / base_metrics["sessions_count"] * 100,
+                2,
+            )
+            if base_metrics["sessions_count"] > 0
+            else 0
+        ),
+    }
+
+
+
+@require_GET
+def ga4_conversion_metrics(request):
+    event = cache.get("LAST_ANALYSIS_EVENT")
+
+    if not event:
+        return JsonResponse(
+            {"error": "No analysis event found"},
+            status=400
+        )
+
+    user_click = event["user_click"]
+
+    # 👇 aquí llamas tus servicios reales
+    metrics = ga4_user_click_conversion_summary(user_click)
+
+    return JsonResponse({
+        "user_click": user_click,
+        "sessions": metrics["sessions"],
+        "events": metrics["events"],
+        "sessions_with_purchase": metrics["sessions_with_purchase"],
+        "conversion_rate": metrics["conversion_rate"],
+    })
 
 

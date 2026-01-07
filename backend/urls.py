@@ -15,7 +15,7 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
 from . import views
 
 urlpatterns = [
@@ -23,4 +23,6 @@ urlpatterns = [
     path('api/', include('dashboard.urls')),
     path('api/pospago/', include('dashboard.urls_pospago')),
     path("", views.home, name="home"),
+    # ====== FRONTEND (React) ======
+    re_path(r'^.*$', views.home),
 ]
