@@ -1,0 +1,738 @@
+# dashboard/sql_queries/pospago_queries.py
+"""
+Queries SQL específicos para el Dashboard de Pospago
+Basados en la estructura real de las tablas
+
+TABLAS PRINCIPALES:
+- tb_R5: Ventas reales/activaciones
+- tb_seller_v9: Ventas cantadas
+- tb_seller_v9_corte: Cortes de ventas
+- tb_calendario: Calendario con días hábiles
+- tb_presupuesto_fijo_movil: Metas y presupuestos
+- tb_trafico_ga4: Tráfico de GA4
+- vw_growth_vs_r5: Vista growth vs R5
+- tb_yflow_ctw: Datos de CTW
+
+REGLAS DE NEGOCIO:
+- Solo POSPAGO bajo "Luisa Rincón" (GERENTE o similar)
+- Días hábiles: Lunes-Viernes = 1, Sábado = 0.5, Domingo/Festivos = 0
+- Cruce GA4 + V9: por ID_TRANSACCION
+- Cruce V9 + R5: por TELEFONO (LINEA_A_MIGRAR / TELE_NUMB) y/o CEDULA
+- Filtros dinámicos por: migración, portabilidad, CTW
+"""
+
+# ============================================
+# FUNCIONES AUXILIARES PARA DÍAS HÁBILES
+# ============================================
+
+FUNCION_DIAS_HABILES = """
+-- Función para calcular días hábiles según regla:
+-- Lunes-Viernes = 1, Sábado = 0.5, Domingo/Festivos = 0
+CREATE FUNCTION dbo.fn_CalcularDiasHabiles(
+    @fecha_inicio DATE,
+    @fecha_fin DATE
+)
+RETURNS DECIMAL(10,2)
+AS
+BEGIN
+    DECLARE @dias_habiles DECIMAL(10,2) = 0
+    DECLARE @fecha_actual DATE = @fecha_inicio
+    
+    WHILE @fecha_actual <= @fecha_fin
+    BEGIN
+        -- Obtener el valor de DIA_HABIL desde la tabla calendario
+        SELECT @dias_habiles = @dias_habiles + 
+            CASE 
+                WHEN NOMBRE_DIA IN ('lunes', 'martes', 'miercoles', 'jueves', 'viernes') THEN 1.0
+                WHEN NOMBRE_DIA = 'sabado' THEN 0.5
+                ELSE 0.0  -- Domingo o festivo
+            END
+        FROM tb_calendario
+        WHERE FECHA = @fecha_actual
+        
+        SET @fecha_actual = DATEADD(DAY, 1, @fecha_actual)
+    END
+    
+    RETURN @dias_habiles
+END
+"""
+
+# ============================================
+# VISTA BASE: VENTAS POSPAGO LUISA RINCÓN
+# ============================================
+
+VISTA_VENTAS_POSPAGO_BASE = """
+CREATE OR ALTER VIEW vw_ventas_pospago_base AS
+SELECT 
+    -- Identificación
+    v9.ID_TRANSACCION,
+    v9.FECHA_PEDIDO,
+    v9.ESTADO_ECOMMERCE,
+    v9.ESTADO_ENTREGA,
+    v9.ESTADO_DEL_PAGO,
+    
+    -- Cliente
+    v9.IDENTIFICACION_DEL_CLIENTE,
+    v9.TELEFONO,
+    v9.LINEA_A_MIGRAR,
+    v9.MIN_A_PORTAR,
+    v9.NOMBRE,
+    v9.APELLIDO,
+    
+    -- Producto
+    v9.NOMBRE_DEL_MATERIAL,
+    v9.CATEGORIA,
+    v9.SUBCATEGORIA_DE_PRODUCTO,
+    v9.FLUJO_DE_VENTA,
+    
+    -- Valores
+    CAST(v9.VALOR_RECAUDADO AS DECIMAL(18,2)) as VALOR_RECAUDADO,
+    CAST(v9.IMPUESTOS_DE_LA_ORDEN AS DECIMAL(18,2)) as IMPUESTOS,
+    CAST(v9.DESCUENTO_CUPON AS DECIMAL(18,2)) as DESCUENTO,
+    
+    -- Tipo de venta (derivado del flujo)
+    CASE 
+        WHEN v9.FLUJO_DE_VENTA LIKE '%MIGRA%' THEN 'MIGRACION'
+        WHEN v9.MIN_A_PORTAR IS NOT NULL AND v9.MIN_A_PORTAR != '' THEN 'PORTABILIDAD'
+        WHEN v9.FLUJO_DE_VENTA LIKE '%CTW%' OR v9.LINEA_A_MIGRAR IS NOT NULL THEN 'CTW'
+        ELSE 'LINEA_NUEVA'
+    END as TIPO_VENTA,
+    
+    -- Origen
+    v9.SOURCE_NAME,
+    
+    -- Metadata
+    CAST(v9.FECHA_PEDIDO AS DATE) as FECHA_VENTA_DATE,
+    YEAR(CAST(v9.FECHA_PEDIDO AS DATE)) as ANIO,
+    MONTH(CAST(v9.FECHA_PEDIDO AS DATE)) as MES,
+    DAY(CAST(v9.FECHA_PEDIDO AS DATE)) as DIA
+
+FROM tb_seller_v9 v9
+WHERE v9.FLUJO_DE_VENTA IN ('POSTPAGO', 'TECNOLOGIA')  -- Solo pospago
+    AND v9.ESTADO_ECOMMERCE != 'Cancelado'  -- Excluir cancelados
+    -- Filtrar por Luisa Rincón (ajustar según columna real que identifica gerente)
+    -- Descomentar cuando sepas qué columna usar:
+    -- AND v9.GERENTE = 'Luisa Rincón'
+"""
+
+# ============================================
+# 1. METAS Y OBJETIVOS
+# ============================================
+
+QUERY_METAS_OBJETIVOS = """
+SELECT 
+    p.mes,
+    p.canal,
+    p.sub_canal,
+    p.categoria,
+    p.gerente,
+    p.cedula_gerente,
+    
+    -- Metas del mes
+    COALESCE(p.migraciones, 0) as meta_migracion,
+    COALESCE(p.portabilidad, 0) as meta_portabilidad,
+    COALESCE(p.linea_nueva, 0) as meta_linea_nueva,
+    COALESCE(p.total_pospago, 0) as meta_total_pospago,
+    
+    -- Real del mes (acumulado hasta la fecha)
+    COALESCE(SUM(CASE WHEN v.TIPO_VENTA = 'MIGRACION' THEN 1 ELSE 0 END), 0) as real_migracion,
+    COALESCE(SUM(CASE WHEN v.TIPO_VENTA = 'PORTABILIDAD' THEN 1 ELSE 0 END), 0) as real_portabilidad,
+    COALESCE(SUM(CASE WHEN v.TIPO_VENTA = 'LINEA_NUEVA' THEN 1 ELSE 0 END), 0) as real_linea_nueva,
+    COALESCE(SUM(CASE WHEN v.TIPO_VENTA = 'CTW' THEN 1 ELSE 0 END), 0) as real_ctw,
+    COUNT(v.ID_TRANSACCION) as real_total,
+    
+    -- Cumplimiento %
+    CASE WHEN p.migraciones > 0 
+        THEN CAST(SUM(CASE WHEN v.TIPO_VENTA = 'MIGRACION' THEN 1 ELSE 0 END) AS FLOAT) / p.migraciones * 100
+        ELSE 0 
+    END as cumplimiento_migracion,
+    
+    CASE WHEN p.portabilidad > 0
+        THEN CAST(SUM(CASE WHEN v.TIPO_VENTA = 'PORTABILIDAD' THEN 1 ELSE 0 END) AS FLOAT) / p.portabilidad * 100
+        ELSE 0
+    END as cumplimiento_portabilidad,
+    
+    CASE WHEN p.total_pospago > 0
+        THEN CAST(COUNT(v.ID_TRANSACCION) AS FLOAT) / p.total_pospago * 100
+        ELSE 0
+    END as cumplimiento_total,
+    
+    -- Días hábiles
+    (SELECT SUM(
+        CASE 
+            WHEN c.NOMBRE_DIA IN ('lunes', 'martes', 'miercoles', 'jueves', 'viernes') THEN 1.0
+            WHEN c.NOMBRE_DIA = 'sabado' THEN 0.5
+            ELSE 0.0
+        END
+    ) FROM tb_calendario c
+     WHERE YEAR(c.FECHA) = YEAR(p.mes)
+       AND MONTH(c.FECHA) = MONTH(p.mes)
+       AND c.FECHA <= CAST(GETDATE() AS DATE)
+    ) as dias_habiles_transcurridos,
+    
+    (SELECT SUM(
+        CASE 
+            WHEN c.NOMBRE_DIA IN ('lunes', 'martes', 'miercoles', 'jueves', 'viernes') THEN 1.0
+            WHEN c.NOMBRE_DIA = 'sabado' THEN 0.5
+            ELSE 0.0
+        END
+    ) FROM tb_calendario c
+     WHERE YEAR(c.FECHA) = YEAR(p.mes)
+       AND MONTH(c.FECHA) = MONTH(p.mes)
+    ) as dias_habiles_totales_mes
+
+FROM tb_presupuesto_fijo_movil p
+LEFT JOIN vw_ventas_pospago_base v
+    ON YEAR(v.FECHA_VENTA_DATE) = YEAR(p.mes)
+    AND MONTH(v.FECHA_VENTA_DATE) = MONTH(p.mes)
+    
+WHERE p.producto = 'MOVIL'
+    AND p.gerente = 'Luisa Rincón'  -- Filtro Luisa Rincón
+    AND YEAR(p.mes) = ?  -- Parámetro año
+    AND MONTH(p.mes) = ?  -- Parámetro mes
+    {additional_filters}
+
+GROUP BY 
+    p.mes, p.canal, p.sub_canal, p.categoria, p.gerente, p.cedula_gerente,
+    p.migraciones, p.portabilidad, p.linea_nueva, p.total_pospago
+"""
+
+# ============================================
+# 2. CIERRE DEL DÍA ANTERIOR
+# ============================================
+
+QUERY_CIERRE_DIA_ANTERIOR = """
+WITH ventas_dia_anterior AS (
+    SELECT 
+        v9.*,
+        -- Cruce con GA4
+        ga4.total_sesiones,
+        ga4.total_usuarios,
+        ga4.medio as ga4_medio,
+        ga4.business_unit2 as ga4_tipo_venta,
+        ga4.sessions_group_l1,
+        ga4.campaign_name,
+        
+        -- Cruce con R5 (activaciones reales)
+        r5.CO_ID as activacion_id,
+        r5.TELE_NUMB as activacion_numero,
+        r5.DIA_ACTIV as dia_activacion,
+        r5.ACTIVACION as fecha_activacion_real,
+        r5.PLAN as plan_activado,
+        r5.CANAL as canal_r5,
+        r5.SUBCANAL as subcanal_r5,
+        
+        -- Indicadores de cruce exitoso
+        CASE WHEN r5.CO_ID IS NOT NULL THEN 1 ELSE 0 END as tiene_activacion,
+        CASE WHEN ga4.id_transaccion IS NOT NULL THEN 1 ELSE 0 END as tiene_tracking_ga4
+
+    FROM vw_ventas_pospago_base v9
+    
+    -- LEFT JOIN con GA4 por ID_TRANSACCION
+    LEFT JOIN tb_trafico_ga4 ga4
+        ON v9.ID_TRANSACCION = ga4.id_transaccion
+        AND ga4.business_unit = 'postpago'
+    
+    -- LEFT JOIN con R5 por TELEFONO y/o CEDULA
+    LEFT JOIN tb_R5 r5
+        ON (
+            -- Cruce por número de teléfono
+            (v9.LINEA_A_MIGRAR = r5.TELE_NUMB 
+             OR v9.TELEFONO = r5.TELE_NUMB
+             OR v9.MIN_A_PORTAR = r5.TELE_NUMB)
+            -- Y/O cruce por cédula
+            OR v9.IDENTIFICACION_DEL_CLIENTE = r5.CEDULA
+        )
+        AND r5.TIPO = 'Postpago'
+        -- Solo activaciones recientes (últimos 7 días de la venta)
+        AND CAST(r5.ACTIVACION AS DATE) BETWEEN 
+            CAST(v9.FECHA_PEDIDO AS DATE) 
+            AND DATEADD(DAY, 7, CAST(v9.FECHA_PEDIDO AS DATE))
+    
+    WHERE CAST(v9.FECHA_PEDIDO AS DATE) = DATEADD(DAY, -1, CAST(GETDATE() AS DATE))  -- Día anterior
+        {additional_filters}
+)
+
+SELECT 
+    -- Resumen del día
+    COUNT(DISTINCT ID_TRANSACCION) as total_ventas_cantadas,
+    COUNT(DISTINCT CASE WHEN ESTADO_DEL_PAGO = 'Pago aprobado' THEN ID_TRANSACCION END) as ventas_aprobadas,
+    COUNT(DISTINCT CASE WHEN activacion_id IS NOT NULL THEN ID_TRANSACCION END) as ventas_activadas,
+    
+    -- Por tipo de venta
+    SUM(CASE WHEN TIPO_VENTA = 'MIGRACION' THEN 1 ELSE 0 END) as migraciones,
+    SUM(CASE WHEN TIPO_VENTA = 'PORTABILIDAD' THEN 1 ELSE 0 END) as portabilidades,
+    SUM(CASE WHEN TIPO_VENTA = 'CTW' THEN 1 ELSE 0 END) as ctw,
+    SUM(CASE WHEN TIPO_VENTA = 'LINEA_NUEVA' THEN 1 ELSE 0 END) as lineas_nuevas,
+    
+    -- Valores
+    SUM(VALOR_RECAUDADO) as valor_total_recaudado,
+    AVG(VALOR_RECAUDADO) as ticket_promedio,
+    
+    -- Tracking y activación
+    COUNT(DISTINCT CASE WHEN tiene_tracking_ga4 = 1 THEN ID_TRANSACCION END) as con_tracking_ga4,
+    COUNT(DISTINCT CASE WHEN tiene_activacion = 1 THEN ID_TRANSACCION END) as con_activacion_r5,
+    
+    -- Tasas
+    CAST(COUNT(DISTINCT CASE WHEN activacion_id IS NOT NULL THEN ID_TRANSACCION END) AS FLOAT) / 
+        NULLIF(COUNT(DISTINCT ID_TRANSACCION), 0) * 100 as tasa_activacion,
+    
+    -- GA4 Metrics
+    SUM(COALESCE(total_sesiones, 0)) as total_sesiones_ga4,
+    SUM(COALESCE(total_usuarios, 0)) as total_usuarios_ga4
+
+FROM ventas_dia_anterior
+"""
+
+# ============================================
+# 3. CORTES DEL DÍA (HORA A HORA)
+# ============================================
+
+QUERY_CORTES_DIA_HOY = """
+WITH ventas_hoy AS (
+    SELECT 
+        v9.*,
+        DATEPART(HOUR, CAST(v9.FECHA_PEDIDO AS DATETIME)) as hora_venta,
+        
+        -- Cruce con GA4
+        ga4.total_sesiones,
+        ga4.id_transaccion as ga4_id_transaccion
+        
+    FROM vw_ventas_pospago_base v9
+    
+    LEFT JOIN tb_trafico_ga4 ga4
+        ON v9.ID_TRANSACCION = ga4.id_transaccion
+        AND ga4.business_unit = 'postpago'
+    
+    WHERE CAST(v9.FECHA_PEDIDO AS DATE) = CAST(GETDATE() AS DATE)  -- Hoy
+        {additional_filters}
+)
+
+SELECT 
+    hora_venta,
+    
+    -- Ventas por hora
+    COUNT(DISTINCT ID_TRANSACCION) as ventas_hora,
+    SUM(COUNT(DISTINCT ID_TRANSACCION)) OVER (ORDER BY hora_venta) as ventas_acumulado,
+    
+    -- Por tipo
+    SUM(CASE WHEN TIPO_VENTA = 'MIGRACION' THEN 1 ELSE 0 END) as migraciones_hora,
+    SUM(CASE WHEN TIPO_VENTA = 'PORTABILIDAD' THEN 1 ELSE 0 END) as portabilidades_hora,
+    SUM(CASE WHEN TIPO_VENTA = 'CTW' THEN 1 ELSE 0 END) as ctw_hora,
+    
+    -- Valores
+    SUM(VALOR_RECAUDADO) as valor_hora,
+    SUM(SUM(VALOR_RECAUDADO)) OVER (ORDER BY hora_venta) as valor_acumulado,
+    
+    -- GA4
+    SUM(COALESCE(total_sesiones, 0)) as sesiones_hora
+
+FROM ventas_hoy
+GROUP BY hora_venta
+ORDER BY hora_venta
+"""
+
+# ============================================
+# 4. EVOLUCIÓN DE VENTAS (COMPARACIÓN PERÍODOS)
+# ============================================
+
+QUERY_EVOLUCION_VENTAS = """
+WITH ventas_periodo AS (
+    SELECT 
+        CAST(v9.FECHA_PEDIDO AS DATE) as fecha,
+        v9.TIPO_VENTA,
+        COUNT(DISTINCT v9.ID_TRANSACCION) as cantidad_ventas,
+        SUM(v9.VALOR_RECAUDADO) as valor_total,
+        
+        -- Cruce con R5
+        COUNT(DISTINCT r5.CO_ID) as activaciones
+        
+    FROM vw_ventas_pospago_base v9
+    
+    LEFT JOIN tb_R5 r5
+        ON (v9.LINEA_A_MIGRAR = r5.TELE_NUMB 
+            OR v9.TELEFONO = r5.TELE_NUMB
+            OR v9.IDENTIFICACION_DEL_CLIENTE = r5.CEDULA)
+        AND r5.TIPO = 'Postpago'
+        AND CAST(r5.ACTIVACION AS DATE) BETWEEN 
+            CAST(v9.FECHA_PEDIDO AS DATE) 
+            AND DATEADD(DAY, 7, CAST(v9.FECHA_PEDIDO AS DATE))
+    
+    WHERE CAST(v9.FECHA_PEDIDO AS DATE) BETWEEN ? AND ?  -- Período
+        {additional_filters}
+    
+    GROUP BY CAST(v9.FECHA_PEDIDO AS DATE), v9.TIPO_VENTA
+)
+
+SELECT 
+    fecha,
+    
+    -- Por tipo
+    SUM(CASE WHEN TIPO_VENTA = 'MIGRACION' THEN cantidad_ventas ELSE 0 END) as migraciones,
+    SUM(CASE WHEN TIPO_VENTA = 'PORTABILIDAD' THEN cantidad_ventas ELSE 0 END) as portabilidades,
+    SUM(CASE WHEN TIPO_VENTA = 'CTW' THEN cantidad_ventas ELSE 0 END) as ctw,
+    SUM(CASE WHEN TIPO_VENTA = 'LINEA_NUEVA' THEN cantidad_ventas ELSE 0 END) as lineas_nuevas,
+    SUM(cantidad_ventas) as total_ventas,
+    
+    -- Activaciones
+    SUM(activaciones) as total_activaciones,
+    
+    -- Tasa de conversión
+    CASE WHEN SUM(cantidad_ventas) > 0
+        THEN CAST(SUM(activaciones) AS FLOAT) / SUM(cantidad_ventas) * 100
+        ELSE 0
+    END as tasa_activacion,
+    
+    -- Valores
+    SUM(valor_total) as valor_total_dia,
+    
+    -- Día de la semana (para análisis)
+    DATENAME(WEEKDAY, fecha) as dia_semana,
+    
+    -- Es día hábil
+    (SELECT TOP 1 
+        CASE 
+            WHEN NOMBRE_DIA IN ('lunes', 'martes', 'miercoles', 'jueves', 'viernes') THEN 1.0
+            WHEN NOMBRE_DIA = 'sabado' THEN 0.5
+            ELSE 0.0
+        END
+     FROM tb_calendario c
+     WHERE c.FECHA = vp.fecha
+    ) as peso_dia_habil
+
+FROM ventas_periodo vp
+GROUP BY fecha
+ORDER BY fecha
+"""
+
+# ============================================
+# 5. DESGLOSE SEMANAL
+# ============================================
+
+QUERY_DESGLOSE_SEMANAL = """
+WITH ventas_semana AS (
+    SELECT 
+        DATEPART(WEEK, v9.FECHA_VENTA_DATE) as numero_semana,
+        DATEPART(YEAR, v9.FECHA_VENTA_DATE) as anio,
+        MIN(v9.FECHA_VENTA_DATE) as fecha_inicio_semana,
+        MAX(v9.FECHA_VENTA_DATE) as fecha_fin_semana,
+        
+        v9.TIPO_VENTA,
+        
+        COUNT(DISTINCT v9.ID_TRANSACCION) as cantidad_ventas,
+        SUM(v9.VALOR_RECAUDADO) as valor_total,
+        
+        -- Días hábiles de la semana
+        (SELECT SUM(
+            CASE 
+                WHEN c.NOMBRE_DIA IN ('lunes', 'martes', 'miercoles', 'jueves', 'viernes') THEN 1.0
+                WHEN c.NOMBRE_DIA = 'sabado' THEN 0.5
+                ELSE 0.0
+            END
+        ) FROM tb_calendario c
+         WHERE DATEPART(WEEK, c.FECHA) = DATEPART(WEEK, v9.FECHA_VENTA_DATE)
+           AND DATEPART(YEAR, c.FECHA) = DATEPART(YEAR, v9.FECHA_VENTA_DATE)
+        ) as dias_habiles_semana
+        
+    FROM vw_ventas_pospago_base v9
+    
+    WHERE DATEPART(YEAR, v9.FECHA_VENTA_DATE) = ?  -- Año
+        AND DATEPART(MONTH, v9.FECHA_VENTA_DATE) = ?  -- Mes
+        {additional_filters}
+    
+    GROUP BY 
+        DATEPART(WEEK, v9.FECHA_VENTA_DATE),
+        DATEPART(YEAR, v9.FECHA_VENTA_DATE),
+        v9.TIPO_VENTA
+)
+
+SELECT 
+    numero_semana,
+    anio,
+    fecha_inicio_semana,
+    fecha_fin_semana,
+    dias_habiles_semana,
+    
+    -- Por tipo
+    SUM(CASE WHEN TIPO_VENTA = 'MIGRACION' THEN cantidad_ventas ELSE 0 END) as migraciones,
+    SUM(CASE WHEN TIPO_VENTA = 'PORTABILIDAD' THEN cantidad_ventas ELSE 0 END) as portabilidades,
+    SUM(CASE WHEN TIPO_VENTA = 'CTW' THEN cantidad_ventas ELSE 0 END) as ctw,
+    SUM(cantidad_ventas) as total_semana,
+    
+    -- Valores
+    SUM(valor_total) as valor_semana,
+    
+    -- Promedio por día hábil
+    CASE WHEN MAX(dias_habiles_semana) > 0
+        THEN SUM(cantidad_ventas) / MAX(dias_habiles_semana)
+        ELSE 0
+    END as promedio_dia_habil
+
+FROM ventas_semana
+GROUP BY numero_semana, anio, fecha_inicio_semana, fecha_fin_semana, dias_habiles_semana
+ORDER BY anio, numero_semana
+"""
+
+# ============================================
+# 6. MAPA DE CALOR DE VENTAS
+# ============================================
+
+QUERY_MAPA_CALOR = """
+SELECT 
+    -- Dimensiones tiempo
+    DATEPART(HOUR, CAST(v9.FECHA_PEDIDO AS DATETIME)) as hora,
+    DATENAME(WEEKDAY, v9.FECHA_VENTA_DATE) as dia_semana,
+    DATEPART(WEEKDAY, v9.FECHA_VENTA_DATE) as dia_semana_num,  -- 1=Domingo, 7=Sábado
+    
+    -- Tipo de venta
+    v9.TIPO_VENTA,
+    
+    -- Métricas
+    COUNT(DISTINCT v9.ID_TRANSACCION) as cantidad_ventas,
+    SUM(v9.VALOR_RECAUDADO) as valor_total,
+    AVG(v9.VALOR_RECAUDADO) as ticket_promedio,
+    
+    -- Intensidad (para el color del mapa de calor)
+    COUNT(DISTINCT v9.ID_TRANSACCION) as intensidad
+
+FROM vw_ventas_pospago_base v9
+
+WHERE v9.FECHA_VENTA_DATE BETWEEN ? AND ?  -- Período
+    {additional_filters}
+
+GROUP BY 
+    DATEPART(HOUR, CAST(v9.FECHA_PEDIDO AS DATETIME)),
+    DATENAME(WEEKDAY, v9.FECHA_VENTA_DATE),
+    DATEPART(WEEKDAY, v9.FECHA_VENTA_DATE),
+    v9.TIPO_VENTA
+
+ORDER BY dia_semana_num, hora
+"""
+
+# ============================================
+# 7. PROYECCIÓN DE CIERRE DEL MES
+# ============================================
+
+QUERY_PROYECCION_CIERRE_MES = """
+WITH datos_mes AS (
+    -- Ventas del mes hasta hoy
+    SELECT 
+        COUNT(DISTINCT ID_TRANSACCION) as ventas_acumuladas,
+        SUM(CASE WHEN TIPO_VENTA = 'MIGRACION' THEN 1 ELSE 0 END) as migraciones_acumuladas,
+        SUM(CASE WHEN TIPO_VENTA = 'PORTABILIDAD' THEN 1 ELSE 0 END) as portabilidades_acumuladas
+    FROM vw_ventas_pospago_base
+    WHERE YEAR(FECHA_VENTA_DATE) = YEAR(GETDATE())
+        AND MONTH(FECHA_VENTA_DATE) = MONTH(GETDATE())
+        {additional_filters}
+),
+dias_mes AS (
+    -- Días hábiles del mes
+    SELECT 
+        SUM(CASE 
+            WHEN c.NOMBRE_DIA IN ('lunes', 'martes', 'miercoles', 'jueves', 'viernes') THEN 1.0
+            WHEN c.NOMBRE_DIA = 'sabado' THEN 0.5
+            ELSE 0.0
+        END) as dias_habiles_transcurridos
+    FROM tb_calendario c
+    WHERE YEAR(c.FECHA) = YEAR(GETDATE())
+        AND MONTH(c.FECHA) = MONTH(GETDATE())
+        AND c.FECHA <= CAST(GETDATE() AS DATE)
+),
+dias_totales AS (
+    SELECT 
+        SUM(CASE 
+            WHEN c.NOMBRE_DIA IN ('lunes', 'martes', 'miercoles', 'jueves', 'viernes') THEN 1.0
+            WHEN c.NOMBRE_DIA = 'sabado' THEN 0.5
+            ELSE 0.0
+        END) as dias_habiles_totales
+    FROM tb_calendario c
+    WHERE YEAR(c.FECHA) = YEAR(GETDATE())
+        AND MONTH(c.FECHA) = MONTH(GETDATE())
+),
+metas AS (
+    SELECT 
+        SUM(total_pospago) as meta_total,
+        SUM(migraciones) as meta_migracion,
+        SUM(portabilidad) as meta_portabilidad
+    FROM tb_presupuesto_fijo_movil
+    WHERE YEAR(mes) = YEAR(GETDATE())
+        AND MONTH(mes) = MONTH(GETDATE())
+        AND producto = 'MOVIL'
+        AND gerente = 'Luisa Rincón'
+)
+
+SELECT 
+    -- Real
+    dm.ventas_acumuladas,
+    dm.migraciones_acumuladas,
+    dm.portabilidades_acumuladas,
+    
+    -- Metas
+    m.meta_total,
+    m.meta_migracion,
+    m.meta_portabilidad,
+    
+    -- Días
+    dh.dias_habiles_transcurridos,
+    dt.dias_habiles_totales,
+    dt.dias_habiles_totales - dh.dias_habiles_transcurridos as dias_habiles_restantes,
+    
+    -- Ritmo actual (ventas por día hábil)
+    CASE WHEN dh.dias_habiles_transcurridos > 0
+        THEN dm.ventas_acumuladas / dh.dias_habiles_transcurridos
+        ELSE 0
+    END as ritmo_actual,
+    
+    -- Proyección de cierre (ritmo actual * días totales)
+    CASE WHEN dh.dias_habiles_transcurridos > 0
+        THEN (dm.ventas_acumuladas / dh.dias_habiles_transcurridos) * dt.dias_habiles_totales
+        ELSE 0
+    END as proyeccion_cierre_total,
+    
+    CASE WHEN dh.dias_habiles_transcurridos > 0
+        THEN (dm.migraciones_acumuladas / dh.dias_habiles_transcurridos) * dt.dias_habiles_totales
+        ELSE 0
+    END as proyeccion_cierre_migracion,
+    
+    -- Cumplimiento proyectado
+    CASE WHEN m.meta_total > 0
+        THEN ((dm.ventas_acumuladas / dh.dias_habiles_transcurridos) * dt.dias_habiles_totales) / m.meta_total * 100
+        ELSE 0
+    END as cumplimiento_proyectado,
+    
+    -- Ritmo requerido para cumplir meta
+    CASE WHEN (dt.dias_habiles_totales - dh.dias_habiles_transcurridos) > 0
+        THEN (m.meta_total - dm.ventas_acumuladas) / (dt.dias_habiles_totales - dh.dias_habiles_transcurridos)
+        ELSE 0
+    END as ritmo_requerido_para_meta
+
+FROM datos_mes dm
+CROSS JOIN dias_mes dh
+CROSS JOIN dias_totales dt
+CROSS JOIN metas m
+"""
+
+# ============================================
+# 8. QUERY PARA FILTROS DINÁMICOS
+# ============================================
+
+def build_filter_clause_pospago(filters: dict) -> str:
+    """
+    Construye cláusula WHERE adicional basada en filtros
+    
+    Args:
+        filters: Diccionario con filtros 
+               {
+                   'tipo_venta': 'MIGRACION',  # o PORTABILIDAD, CTW
+                   'fecha_inicio': '2024-01-01',
+                   'fecha_fin': '2024-01-31',
+                   'estado': 'Pago aprobado'
+               }
+    
+    Returns:
+        String con cláusula WHERE adicional
+    """
+    clauses = []
+    
+    if not filters:
+        return ""
+    
+    # Filtro por tipo de venta (Migración, Portabilidad, CTW)
+    if 'tipo_venta' in filters and filters['tipo_venta']:
+        tipo = filters['tipo_venta'].upper()
+        if tipo in ['MIGRACION', 'PORTABILIDAD', 'CTW', 'LINEA_NUEVA']:
+            clauses.append(f"AND v9.TIPO_VENTA = '{tipo}'")
+    
+    # Filtro por rango de fechas
+    if 'fecha_inicio' in filters and filters['fecha_inicio']:
+        clauses.append(f"AND CAST(v9.FECHA_PEDIDO AS DATE) >= '{filters['fecha_inicio']}'")
+    
+    if 'fecha_fin' in filters and filters['fecha_fin']:
+        clauses.append(f"AND CAST(v9.FECHA_PEDIDO AS DATE) <= '{filters['fecha_fin']}'")
+    
+    # Filtro por estado del pago
+    if 'estado_pago' in filters and filters['estado_pago']:
+        clauses.append(f"AND v9.ESTADO_DEL_PAGO = '{filters['estado_pago']}'")
+    
+    # Filtro por categoría de producto
+    if 'categoria' in filters and filters['categoria']:
+        clauses.append(f"AND v9.CATEGORIA = '{filters['categoria']}'")
+    
+    return " ".join(clauses)
+
+
+# ============================================
+# 9. QUERY DE INTEGRACIÓN COMPLETA (GA4 + V9 + R5)
+# ============================================
+
+QUERY_INTEGRACION_COMPLETA = """
+SELECT 
+    -- Identificación
+    v9.ID_TRANSACCION,
+    v9.FECHA_PEDIDO,
+    v9.TIPO_VENTA,
+    v9.IDENTIFICACION_DEL_CLIENTE,
+    v9.TELEFONO,
+    v9.LINEA_A_MIGRAR,
+    
+    -- Valores V9
+    v9.VALOR_RECAUDADO as valor_cantado,
+    v9.ESTADO_DEL_PAGO,
+    v9.ESTADO_ECOMMERCE,
+    
+    -- Datos GA4
+    ga4.total_sesiones,
+    ga4.total_usuarios,
+    ga4.medio as ga4_medio,
+    ga4.sessions_group_l1,
+    ga4.sessions_group_l2,
+    ga4.campaign_name,
+    CASE WHEN ga4.id_transaccion IS NOT NULL THEN 1 ELSE 0 END as tiene_tracking_ga4,
+    
+    -- Datos R5 (Activación)
+    r5.CO_ID as activacion_id,
+    r5.TELE_NUMB as numero_activado,
+    r5.ACTIVACION as fecha_activacion,
+    r5.PLAN as plan_activado,
+    r5.CANAL as canal_activacion,
+    r5.SUBCANAL as subcanal_activacion,
+    CASE WHEN r5.CO_ID IS NOT NULL THEN 1 ELSE 0 END as tiene_activacion,
+    
+    -- Días hasta activación
+    DATEDIFF(DAY, CAST(v9.FECHA_PEDIDO AS DATE), CAST(r5.ACTIVACION AS DATE)) as dias_hasta_activacion,
+    
+    -- Indicadores de calidad del cruce
+    CASE 
+        WHEN ga4.id_transaccion IS NOT NULL AND r5.CO_ID IS NOT NULL THEN 'COMPLETO'
+        WHEN ga4.id_transaccion IS NOT NULL THEN 'SOLO_GA4'
+        WHEN r5.CO_ID IS NOT NULL THEN 'SOLO_R5'
+        ELSE 'SIN_CRUCES'
+    END as calidad_integracion
+
+FROM vw_ventas_pospago_base v9
+
+-- LEFT JOIN GA4 por ID_TRANSACCION
+LEFT JOIN tb_trafico_ga4 ga4
+    ON v9.ID_TRANSACCION = ga4.id_transaccion
+    AND ga4.business_unit = 'postpago'
+
+-- LEFT JOIN R5 por TELEFONO y/o CEDULA
+LEFT JOIN tb_R5 r5
+    ON (
+        -- Cruce por número
+        (v9.LINEA_A_MIGRAR = r5.TELE_NUMB 
+         OR v9.TELEFONO = r5.TELE_NUMB
+         OR v9.MIN_A_PORTAR = r5.TELE_NUMB)
+        -- Y/O por cédula
+        OR v9.IDENTIFICACION_DEL_CLIENTE = r5.CEDULA
+    )
+    AND r5.TIPO = 'Postpago'
+    AND CAST(r5.ACTIVACION AS DATE) BETWEEN 
+        CAST(v9.FECHA_PEDIDO AS DATE) 
+        AND DATEADD(DAY, 7, CAST(v9.FECHA_PEDIDO AS DATE))
+
+WHERE CAST(v9.FECHA_PEDIDO AS DATE) BETWEEN ? AND ?
+    {additional_filters}
+
+ORDER BY v9.FECHA_PEDIDO DESC
+"""

@@ -10,6 +10,8 @@ from collections import defaultdict
 import json
 from django.views.decorators.http import require_GET
 import re
+from django.core.cache import cache
+from time import time
 
 
 def ga4_dashboard_metrics(request):
@@ -2062,26 +2064,6 @@ def ga4_genia_ingresos_por_dia(request):
 
 
 
-
-
-@csrf_exempt
-def element_select(request):
-    if request.method != "POST":
-        return JsonResponse({"error": "Method not allowed"}, status=405)
-
-    data = json.loads(request.body)
-
-    # 🔐 Validar token
-    if data.get("analysis_token") != "123456789":
-        return JsonResponse({"error": "Invalid token"}, status=403)
-
-    # 🧠 Guardar en DB / logs
-    print("Elemento seleccionado:", data)
-
-    return JsonResponse({"status": "ok"})
-
-
-
 @csrf_exempt
 def ga4_migracion_view_item_list(request):
 
@@ -2174,12 +2156,12 @@ def ga4_migracion_view_item_list(request):
                     dimension_filter = FilterExpression(
                         and_group=FilterExpressionList(
                             expressions=[
-                                FilterExpression(
-                                    filter=Filter(
-                                        field_name="hostName",
-                                        string_filter={"value": "tienda.claro.com.co"},
-                                    )
-                                ),
+                                #FilterExpression(
+                                #    filter=Filter(
+                                #        field_name="hostName",
+                                #        string_filter={"value": "tienda.claro.com.co"},
+                                #    )
+                                #),
                                 FilterExpression(
                                     filter=Filter(
                                         field_name="customEvent:business_unit2",
@@ -2438,12 +2420,12 @@ def _run_sessions_view_item_list(
         dimension_filter=FilterExpression(
             and_group=FilterExpressionList(
                 expressions=[
-                    FilterExpression(
-                        filter=Filter(
-                            field_name="hostName",
-                            string_filter={"value": "tienda.claro.com.co"},
-                        )
-                    ),
+                    #FilterExpression(
+                    #    filter=Filter(
+                    #        field_name="hostName",
+                    #        string_filter={"value": "tienda.claro.com.co"},
+                    #    )
+                    #),
                     FilterExpression(
                         filter=Filter(
                             field_name="customEvent:business_unit2",
@@ -2998,12 +2980,12 @@ def _run_ga4_sesiones_subcanal(
     dimension_filter = FilterExpression(
         and_group=FilterExpressionList(
             expressions=[
-                FilterExpression(
-                    filter=Filter(
-                        field_name="hostName",
-                        string_filter={"value": "tienda.claro.com.co"},
-                    )
-                ),
+                #FilterExpression(
+                #    filter=Filter(
+                #        field_name="hostName",
+                #        string_filter={"value": "tienda.claro.com.co"},
+                #    )
+                #),
                 FilterExpression(
                     filter=Filter(
                         field_name="customEvent:business_unit2",
@@ -3046,12 +3028,12 @@ def _run_ga4_ventas_subcanal(
     dimension_filter = FilterExpression(
         and_group=FilterExpressionList(
             expressions=[
-                FilterExpression(
-                    filter=Filter(
-                        field_name="hostName",
-                        string_filter={"value": "tienda.claro.com.co"},
-                    )
-                ),
+                #FilterExpression(
+                #    filter=Filter(
+                #        field_name="hostName",
+                #        string_filter={"value": "tienda.claro.com.co"},
+                #    )
+                #),
                 FilterExpression(
                     filter=Filter(
                         field_name="customEvent:business_unit2",
@@ -3154,4 +3136,219 @@ def ga4_subcanal_owned_comparacion_view(request):
         },
         safe=False,
     )
+
+
+
+
+# views.py
+def analysis_status(request):
+    """
+    Devuelve si hay un nuevo elemento seleccionado
+    """
+    last_click = cache.get("LAST_USER_CLICK")  # o DB / variable global
+
+    if not last_click:
+        return JsonResponse({"ready": False})
+
+    return JsonResponse({
+        "ready": True,
+        "user_click": last_click
+    })
+
+
+
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+from django.core.cache import cache
+import json
+
+
+@csrf_exempt
+def element_select(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    token_body = data.get("analysis_token")
+    token_query = request.GET.get("__analyze")
+
+    if token_body != token_query:
+        return JsonResponse({"error": "Invalid token"}, status=403)
+
+    user_click = data.get("element", {}).get("user_click")
+
+    if not user_click:
+        return JsonResponse({"error": "Missing user_click"}, status=400)
+
+    event = {
+        "user_click": user_click,
+        "ts": int(time())
+    }
+
+    cache.set("LAST_ANALYSIS_EVENT", event, timeout=600)
+
+    print("📊 CACHE SET:", event)
+
+    return JsonResponse({"status": "ok"})
+
+
+def analysis_status(request):
+    event = cache.get("LAST_ANALYSIS_EVENT")
+
+    print("🔍 CACHE GET:", event)
+
+    if not event:
+        return JsonResponse({"ready": False})
+
+    return JsonResponse({
+        "ready": True,
+        "user_click": event["user_click"],
+        "event_ts": event["ts"]
+    })
+
+def ga4_user_click_metrics(user_click):
+    client = BetaAnalyticsDataClient.from_service_account_file(
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        date_ranges=[DateRange(start_date="2025-12-15", end_date="2025-12-28")],
+        dimensions=[
+            Dimension(name="customEvent:user_click"),
+            Dimension(name="customEvent:session_id_final"),
+        ],
+        metrics=[
+            Metric(name="eventCount"),
+            Metric(name="sessions"),
+        ],
+        dimension_filter=FilterExpression(
+            filter=Filter(
+                field_name="customEvent:user_click",
+                string_filter=Filter.StringFilter(
+                    value=user_click,
+                    match_type=Filter.StringFilter.MatchType.EXACT
+                )
+            )
+        ),
+    )
+
+    response = client.run_report(request)
+
+    sessions = set()
+    total_events = 0
+
+    for row in response.rows:
+        sessions.add(row.dimension_values[1].value)
+        total_events += int(row.metric_values[0].value)
+
+    return {
+        "sessions_count": len(sessions),
+        "events_count": total_events,
+        "session_ids": list(sessions),
+    }
+
+
+def ga4_sessions_with_purchase(session_ids):
+    if not session_ids:
+        return 0
+
+    client = BetaAnalyticsDataClient.from_service_account_file(
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    )
+    property_id = os.getenv("GA4_PROPERTY_ID")
+
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
+        dimensions=[
+            Dimension(name="customEvent:session_id_final"),
+        ],
+        metrics=[Metric(name="eventCount")],
+        dimension_filter=FilterExpression(
+            and_group=FilterExpressionList(
+                expressions=[
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="eventName",
+                            string_filter=Filter.StringFilter(
+                                value="purchase",
+                                match_type=Filter.StringFilter.MatchType.EXACT
+                            ),
+                        )
+                    ),
+                    FilterExpression(
+                        filter=Filter(
+                            field_name="customEvent:session_id_final",
+                            in_list_filter=Filter.InListFilter(
+                                values=session_ids
+                            ),
+                        )
+                    ),
+                ]
+            )
+        ),
+    )
+
+    response = client.run_report(request)
+
+    purchase_sessions = {
+        row.dimension_values[0].value for row in response.rows
+    }
+
+    return len(purchase_sessions)
+
+
+def ga4_user_click_conversion_summary(user_click):
+    base_metrics = ga4_user_click_metrics(user_click)
+
+    purchase_sessions_count = ga4_sessions_with_purchase(
+        base_metrics["session_ids"]
+    )
+
+    return {
+        "user_click": user_click,
+        "sessions": base_metrics["sessions_count"],
+        "events": base_metrics["events_count"],
+        "sessions_with_purchase": purchase_sessions_count,
+        "conversion_rate": (
+            round(
+                purchase_sessions_count / base_metrics["sessions_count"] * 100,
+                2,
+            )
+            if base_metrics["sessions_count"] > 0
+            else 0
+        ),
+    }
+
+
+
+@require_GET
+def ga4_conversion_metrics(request):
+    event = cache.get("LAST_ANALYSIS_EVENT")
+
+    if not event:
+        return JsonResponse(
+            {"error": "No analysis event found"},
+            status=400
+        )
+
+    user_click = event["user_click"]
+
+    # 👇 aquí llamas tus servicios reales
+    metrics = ga4_user_click_conversion_summary(user_click)
+
+    return JsonResponse({
+        "user_click": user_click,
+        "sessions": metrics["sessions"],
+        "events": metrics["events"],
+        "sessions_with_purchase": metrics["sessions_with_purchase"],
+        "conversion_rate": metrics["conversion_rate"],
+    })
+
 
