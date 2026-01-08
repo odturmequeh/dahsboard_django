@@ -14,7 +14,8 @@ export default function GeniaComponent({ startDate, endDate }) {
 
       try {
         const res = await fetch(
-          `https://dahsboard-django.onrender.com/api/dashboard/genia-summary/?start_date=${startDate}&end_date=${endDate}`
+          
+          `/api/dashboard/genia-summary/?start_date=${startDate}&end_date=${endDate}`
         );
         if (!res.ok) throw new Error("Error consultando el backend");
 

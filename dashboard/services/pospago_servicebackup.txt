@@ -1,0 +1,395 @@
+# dashboard/services/pospago_service_async.py
+"""
+Servicio ASÍNCRONO de Pospago con async/await
+Mucho más eficiente que threads para I/O-bound operations
+"""
+
+import asyncio
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+import logging
+import pyodbc
+import pandas as pd
+from django.conf import settings
+from concurrent.futures import ThreadPoolExecutor
+
+from dashboard.sql_queries.pospago_queries import (
+    QUERY_METAS_OBJETIVOS,
+    QUERY_CIERRE_DIA_ANTERIOR,
+    QUERY_CORTES_DIA_HOY,
+    QUERY_EVOLUCION_VENTAS,
+    QUERY_DESGLOSE_SEMANAL,
+    QUERY_MAPA_CALOR,
+    QUERY_PROYECCION_CIERRE_MES,
+    build_filter_clause_pospago
+)
+
+logger = logging.getLogger(__name__)
+
+# Thread pool para operaciones de DB (pyodbc no es async nativo)
+executor = ThreadPoolExecutor(max_workers=10)
+
+
+def get_sql_server_connection():
+    """Crea conexión a SQL Server"""
+    try:
+        drivers = [d for d in pyodbc.drivers() if 'SQL Server' in d]
+        if not drivers:
+            raise Exception("No se encontró driver ODBC")
+        
+        driver = drivers[0]
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER=100.126.28.123,9500;"
+            f"DATABASE=DB_Ventas;"
+            f"UID=usr_admin;"
+            f"PWD=An4l1t1c$;"
+        )
+        
+        connection = pyodbc.connect(conn_str, timeout=30)
+        return connection
+        
+    except Exception as e:
+        logger.error(f"❌ Error conectando: {str(e)}")
+        raise
+
+
+def _execute_query_sync(query: str, params: tuple = None) -> pd.DataFrame:
+    """Ejecuta query síncrona (se ejecutará en thread pool)"""
+    conn = None
+    try:
+        conn = get_sql_server_connection()
+        
+        if params:
+            df = pd.read_sql(query, conn, params=params)
+        else:
+            df = pd.read_sql(query, conn)
+        
+        logger.info(f"✅ Query ejecutada: {len(df)} filas")
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ Error en query: {str(e)}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+async def execute_query_async(query: str, params: tuple = None) -> pd.DataFrame:
+    """
+    Ejecuta query de forma ASÍNCRONA
+    Convierte la operación de DB bloqueante en async usando executor
+    """
+    loop = asyncio.get_event_loop()
+    df = await loop.run_in_executor(executor, _execute_query_sync, query, params)
+    return df
+
+
+class PospagoServiceAsync:
+    """
+    Servicio ASÍNCRONO para dashboard de pospago
+    Todas las funciones son async y se pueden ejecutar en paralelo
+    """
+    
+    async def get_metas_objetivos(
+        self, 
+        anio: int, 
+        mes: int, 
+        filtros: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Obtiene metas y objetivos (ASYNC)"""
+        try:
+            logger.info(f"📊 Obteniendo metas: {anio}-{mes:02d}")
+            
+            filtro_adicional = build_filter_clause_pospago(filtros)
+            query = QUERY_METAS_OBJETIVOS.replace('{filtro_adicional}', filtro_adicional)
+            
+            df = await execute_query_async(query, (anio, mes))
+            
+            if df.empty:
+                logger.warning(f"⚠️ No hay datos de metas para {anio}-{mes}")
+                return {
+                    'tiene_datos': False,
+                    'metas': {'total': 0},
+                    'real': {'total': 0},
+                    'cumplimiento': {'total': 0},
+                    'dias_habiles': {'transcurridos': 0, 'totales': 0}
+                }
+            
+            row = df.iloc[0]
+            
+            return {
+                'tiene_datos': True,
+                'metas': {
+                    'migracion': int(row['meta_migracion']),
+                    'portabilidad': int(row['meta_portabilidad']),
+                    'linea_nueva': int(row['meta_linea_nueva']),
+                    'total': int(row['meta_total_pospago'])
+                },
+                'real': {
+                    'migracion': int(row['real_migracion']),
+                    'portabilidad': int(row['real_portabilidad']),
+                    'linea_nueva': int(row['real_linea_nueva']),
+                    'ctw': int(row['real_ctw']),
+                    'total': int(row['real_total'])
+                },
+                'cumplimiento': {
+                    'migracion': float(row['cumplimiento_migracion']),
+                    'portabilidad': float(row['cumplimiento_portabilidad']),
+                    'total': float(row['cumplimiento_total'])
+                },
+                'dias_habiles': {
+                    'transcurridos': float(row['dias_habiles_transcurridos'] or 0),
+                    'totales': float(row['dias_habiles_totales_mes'] or 0)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en metas: {str(e)}")
+            raise
+    
+    async def get_cierre_dia_anterior(
+        self, 
+        filtros: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Obtiene cierre del día anterior (ASYNC)"""
+        try:
+            logger.info("📊 Obteniendo cierre día anterior")
+            
+            filtro_adicional = build_filter_clause_pospago(filtros)
+            query = QUERY_CIERRE_DIA_ANTERIOR.replace('{filtro_adicional}', filtro_adicional)
+            
+            df = await execute_query_async(query)
+            
+            if df.empty:
+                return {'tiene_datos': False}
+            
+            row = df.iloc[0]
+            
+            return {
+                'tiene_datos': True,
+                'fecha': row['fecha'].strftime('%Y-%m-%d') if pd.notna(row['fecha']) else None,
+                'ventas': {
+                    'cantadas': int(row['cantadas']),
+                    'activadas': int(row['activadas']),
+                    'aprobadas': int(row['aprobadas']),
+                    'migraciones': int(row['migraciones']),
+                    'portabilidades': int(row['portabilidades']),
+                    'ctw': int(row['ctw']),
+                    'linea_nueva': int(row['linea_nueva'])
+                },
+                'ga4_metrics': {
+                    'sesiones': int(row['sesiones']),
+                    'usuarios': int(row['usuarios'])
+                },
+                'tasas': {
+                    'activacion': float(row['tasa_activacion'])
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en cierre: {str(e)}")
+            raise
+    
+    async def get_cortes_dia_hoy(
+        self, 
+        filtros: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Obtiene cortes del día (ASYNC)"""
+        try:
+            logger.info("📊 Obteniendo cortes del día")
+            
+            filtro_adicional = build_filter_clause_pospago(filtros)
+            query = QUERY_CORTES_DIA_HOY.replace('{filtro_adicional}', filtro_adicional)
+            
+            df = await execute_query_async(query)
+            
+            if df.empty:
+                return {'tiene_datos': False, 'cortes_por_hora': []}
+            
+            cortes = []
+            for _, row in df.iterrows():
+                cortes.append({
+                    'hora': int(row['hora']),
+                    'ventas_hora': int(row['ventas_hora']),
+                    'activadas_hora': int(row['activadas_hora']),
+                    'migraciones': int(row['migraciones']),
+                    'portabilidades': int(row['portabilidades']),
+                    'sesiones': int(row['sesiones']),
+                    'ventas_acumulado': int(row['ventas_acumulado']),
+                    'tasa_conversion_hora': float(row['tasa_conversion_hora'])
+                })
+            
+            return {
+                'tiene_datos': True,
+                'cortes_por_hora': cortes
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en cortes: {str(e)}")
+            raise
+    
+    async def get_evolucion_ventas(
+        self, 
+        fecha_inicio: str, 
+        fecha_fin: str, 
+        filtros: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Obtiene evolución de ventas (ASYNC)"""
+        try:
+            logger.info(f"📊 Obteniendo evolución: {fecha_inicio} - {fecha_fin}")
+            
+            filtro_adicional = build_filter_clause_pospago(filtros)
+            query = QUERY_EVOLUCION_VENTAS.replace('{filtro_adicional}', filtro_adicional)
+            
+            df = await execute_query_async(query, (fecha_inicio, fecha_fin))
+            
+            if df.empty:
+                return {'tiene_datos': False, 'datos_diarios': []}
+            
+            datos_diarios = []
+            for _, row in df.iterrows():
+                datos_diarios.append({
+                    'fecha': row['fecha'].strftime('%Y-%m-%d'),
+                    'migraciones': int(row['migraciones']),
+                    'portabilidades': int(row['portabilidades']),
+                    'linea_nueva': int(row['linea_nueva']),
+                    'total_ventas': int(row['total_ventas']),
+                    'total_activaciones': int(row['total_activaciones'])
+                })
+            
+            return {
+                'tiene_datos': True,
+                'datos_diarios': datos_diarios,
+                'resumen': {
+                    'total_ventas': int(df['total_ventas'].sum()),
+                    'total_activaciones': int(df['total_activaciones'].sum()),
+                    'promedio_diario': float(df['total_ventas'].mean())
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en evolución: {str(e)}")
+            raise
+    
+    async def get_desglose_semanal(
+        self, 
+        anio: int, 
+        mes: int, 
+        filtros: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Obtiene desglose semanal (ASYNC)"""
+        try:
+            logger.info(f"📊 Obteniendo desglose: {anio}-{mes:02d}")
+            
+            filtro_adicional = build_filter_clause_pospago(filtros)
+            query = QUERY_DESGLOSE_SEMANAL.replace('{filtro_adicional}', filtro_adicional)
+            
+            df = await execute_query_async(query, (anio, mes))
+            
+            if df.empty:
+                return {'tiene_datos': False, 'semanas': []}
+            
+            semanas = []
+            for _, row in df.iterrows():
+                semanas.append({
+                    'numero_semana': int(row['numero_semana']),
+                    'fecha_inicio': row['fecha_inicio'].strftime('%Y-%m-%d'),
+                    'fecha_fin': row['fecha_fin'].strftime('%Y-%m-%d'),
+                    'dias_habiles': float(row['dias_habiles']),
+                    'migraciones': int(row['migraciones']),
+                    'portabilidades': int(row['portabilidades']),
+                    'total': int(row['total']),
+                    'promedio_dia_habil': float(row['promedio_dia_habil'])
+                })
+            
+            return {
+                'tiene_datos': True,
+                'semanas': semanas,
+                'total_mes': int(df['total'].sum())
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en desglose: {str(e)}")
+            raise
+    
+    async def get_mapa_calor(
+        self, 
+        fecha_inicio: str, 
+        fecha_fin: str, 
+        filtros: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Obtiene mapa de calor (ASYNC)"""
+        try:
+            logger.info(f"📊 Obteniendo mapa: {fecha_inicio} - {fecha_fin}")
+            
+            filtro_adicional = build_filter_clause_pospago(filtros)
+            query = QUERY_MAPA_CALOR.replace('{filtro_adicional}', filtro_adicional)
+            
+            df = await execute_query_async(query, (fecha_inicio, fecha_fin))
+            
+            if df.empty:
+                return {'tiene_datos': False, 'datos': []}
+            
+            datos = []
+            for _, row in df.iterrows():
+                datos.append({
+                    'hora': int(row['hora']),
+                    'dia_semana': str(row['dia_semana']),
+                    'dia_semana_num': int(row['dia_semana_num']),
+                    'cantidad': int(row['cantidad'])
+                })
+            
+            return {
+                'tiene_datos': True,
+                'datos': datos
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en mapa: {str(e)}")
+            raise
+    
+    async def get_proyeccion_cierre_mes(
+        self, 
+        filtros: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """Obtiene proyección de cierre (ASYNC)"""
+        try:
+            logger.info("📊 Obteniendo proyección")
+            
+            filtro_adicional = build_filter_clause_pospago(filtros)
+            query = QUERY_PROYECCION_CIERRE_MES.replace('{filtro_adicional}', filtro_adicional)
+            
+            df = await execute_query_async(query)
+            
+            if df.empty:
+                return {'tiene_datos': False}
+            
+            row = df.iloc[0]
+            
+            return {
+                'tiene_datos': True,
+                'actual': {
+                    'total': int(row['total_actual']),
+                    'migraciones': int(row['migraciones_actual']),
+                    'portabilidades': int(row['portabilidades_actual'])
+                },
+                'proyeccion': {
+                    'total': int(row['proyeccion_total']),
+                    'migraciones': int(row['proyeccion_migraciones']),
+                    'portabilidades': int(row['proyeccion_portabilidades'])
+                },
+                'dias_habiles': {
+                    'transcurridos': float(row['dias_transcurridos']),
+                    'totales': float(row['dias_totales_mes'])
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error en proyección: {str(e)}")
+            raise
+
+
+# Instancia global
+pospago_service_async = PospagoServiceAsync()
