@@ -57,7 +57,7 @@ export default function PageResources({ startDate, endDate }) {
     if (selectedResource) setSelectedResource(null);
   }, [localStart, localEnd]);
 
-  const API_BASE_URL = "https://dahsboard-django.onrender.com/api/dashboard/resources";
+  const API_BASE_URL = "/api/dashboard/resources";
     // Si cambian las fechas, cerrar modal
   React.useEffect(() => {
     if (selectedResource) setSelectedResource(null);
